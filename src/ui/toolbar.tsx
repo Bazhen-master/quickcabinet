@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useAppStore, useProject } from '../app/store';
 import { buildCuttingList, cuttingListToCsv } from '../domain/cutting-list';
 import { saveNcExport } from '../infra/export-nc';
@@ -6,7 +6,7 @@ import { saveSelectedPartMap } from '../infra/export-part-map';
 import { saveProjectToFile } from '../infra/save-load';
 import { t } from '../i18n';
 
-export function Toolbar() {
+export function Toolbar({ uiScale = 1 }: { uiScale?: number }) {
   const project = useProject();
   const selected = useAppStore((s) => s.selected);
   const activeTool = useAppStore((s) => s.activeTool);
@@ -66,6 +66,7 @@ export function Toolbar() {
   return (
     <div
       style={{
+        zoom: uiScale,
         display: 'flex',
         gap: 8,
         padding: 12,
