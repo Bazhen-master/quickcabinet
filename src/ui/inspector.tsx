@@ -156,7 +156,7 @@ function StickySelectionBlock({ children, isDarkBlue = false }: { children: Reac
   );
 }
 
-export function Inspector() {
+export function Inspector({ uiScale = 1 }: { uiScale?: number }) {
   const panelScrollRef = useRef<HTMLDivElement | null>(null);
   const inspectorSelectionRef = useRef<HTMLDivElement | null>(null);
   const [selectionOpen, setSelectionOpen] = useState(false);
@@ -420,7 +420,7 @@ export function Inspector() {
   }, [selectedDrillOp]);
 
   return (
-    <div ref={panelScrollRef} style={{ width: '100%', borderLeft: `1px solid ${isDarkBlue ? '#3f3f46' : '#e7e5e4'}`, background: isDarkBlue ? '#18181b' : '#fafaf9', color: isDarkBlue ? '#e5e7eb' : '#111', padding: 12, overflow: 'auto', boxSizing: 'border-box' }}>
+    <div ref={panelScrollRef} style={{ zoom: uiScale, width: '100%', borderLeft: `1px solid ${isDarkBlue ? '#3f3f46' : '#e7e5e4'}`, background: isDarkBlue ? '#18181b' : '#fafaf9', color: isDarkBlue ? '#e5e7eb' : '#111', padding: 12, overflow: 'auto', boxSizing: 'border-box' }}>
       <div style={{ display: 'grid', gap: 12 }}>
         <div ref={inspectorSelectionRef}>
           <AccordionCard title={t(language, 'inspectorSelection')} open={selectionOpen} onToggle={() => setSelectionOpen((value) => !value)} isDarkBlue={isDarkBlue} order={inspectorPanelOrder}>
