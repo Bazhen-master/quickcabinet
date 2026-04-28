@@ -12,6 +12,7 @@ export default function App() {
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1440));
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const isMobile = viewportWidth <= 1024;
+  const mobileUiScale = 0.6;
 
   const mobileInspectorTitle = useMemo(
     () => (language === 'ru' ? 'Инспектор' : 'Inspector'),
@@ -50,7 +51,7 @@ export default function App() {
         color: isDarkBlue ? '#e5e7eb' : '#111827',
       }}
     >
-      <Toolbar />
+      <Toolbar uiScale={isMobile ? mobileUiScale : 1} />
       {isMobile ? (
         <div style={{ position: 'relative', minHeight: 0, minWidth: 0 }}>
           <div style={{ minWidth: 0, minHeight: 0, height: '100%' }}><SceneRoot /></div>
@@ -109,7 +110,7 @@ export default function App() {
               <div style={{ width: 56, height: 5, borderRadius: 999, background: isDarkBlue ? '#71717a' : '#a8a29e' }} />
             </div>
             <div style={{ height: 'calc(100% - 42px)', overflow: 'auto' }}>
-              <Inspector />
+              <Inspector uiScale={mobileUiScale} />
             </div>
           </div>
         </div>
