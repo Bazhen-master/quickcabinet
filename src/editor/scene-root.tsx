@@ -275,7 +275,7 @@ function PartMesh({ part }: { part: Part }) {
           side={xrayMode ? THREE.DoubleSide : THREE.FrontSide}
           depthWrite={!xrayMode}
           depthTest={!xrayMode}
-          polygonOffset
+          polygonOffset={xrayMode}
           polygonOffsetFactor={xrayMode ? 2 : 1}
           polygonOffsetUnits={xrayMode ? 2 : 1}
         />
@@ -451,8 +451,25 @@ function CameraRig() {
 function EmptyHint() {
   const language = useAppStore((s) => s.language);
   const themeMode = useAppStore((s) => s.themeMode);
+  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 1024;
   const isDarkBlue = themeMode === 'dark-blue';
-  return <Html center><div style={{ background: isDarkBlue ? 'rgba(36,36,39,0.96)' : 'rgba(255,255,255,0.95)', border: `1px solid ${isDarkBlue ? '#52525b' : '#ddd'}`, borderRadius: 10, padding: '12px 16px', color: isDarkBlue ? '#e5e7eb' : '#444', fontSize: 14 }}>{t(language, 'workspaceHint')}</div></Html>;
+  return (
+    <Html center position={[0, isMobile ? 180 : 0, 0]} zIndexRange={[1, 0]}>
+      <div
+        style={{
+          background: isDarkBlue ? 'rgba(36,36,39,0.96)' : 'rgba(255,255,255,0.95)',
+          border: `1px solid ${isDarkBlue ? '#52525b' : '#ddd'}`,
+          borderRadius: 10,
+          padding: '12px 16px',
+          color: isDarkBlue ? '#e5e7eb' : '#444',
+          fontSize: 14,
+          pointerEvents: 'none',
+        }}
+      >
+        {t(language, 'workspaceHint')}
+      </div>
+    </Html>
+  );
 }
 
 function AxisIndicator({ parts }: { parts: Part[] }) {
@@ -579,3 +596,4 @@ export function SceneRoot() {
     <CameraRig />
   </Canvas>;
 }
+
