@@ -12,10 +12,10 @@ export default function App() {
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window !== 'undefined' ? window.innerWidth : 1440));
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const isMobile = viewportWidth <= 1024;
-  const mobileUiScale = 0.6;
+  const mobileUiScale = 0.8;
 
   const mobileInspectorTitle = useMemo(
-    () => (language === 'ru' ? 'Инспектор' : 'Inspector'),
+    () => (language === 'ru' ? 'Создать шкаф' : 'Create cabinet'),
     [language]
   );
 
@@ -44,7 +44,7 @@ export default function App() {
   return (
     <div
       style={{
-        height: '100vh',
+        height: '100dvh',
         display: 'grid',
         gridTemplateRows: isMobile ? 'auto 1fr' : '56px 1fr',
         background: isDarkBlue ? '#18181b' : '#fafaf9',
@@ -61,7 +61,7 @@ export default function App() {
             style={{
               position: 'absolute',
               right: 12,
-              bottom: mobileInspectorOpen ? '66vh' : 14,
+              bottom: mobileInspectorOpen ? '66dvh' : 'calc(env(safe-area-inset-bottom, 0px) + 14px)',
               zIndex: 40,
               border: '1px solid #f59e0b',
               background: isDarkBlue ? 'rgba(245,158,11,0.95)' : 'rgba(251,146,60,0.95)',
@@ -82,7 +82,7 @@ export default function App() {
               position: 'absolute',
               left: 0,
               right: 0,
-              bottom: 0,
+              bottom: 'env(safe-area-inset-bottom, 0px)',
               height: '68%',
               transform: mobileInspectorOpen ? 'translateY(0)' : 'translateY(calc(100% - 42px))',
               transition: 'transform 220ms ease',
