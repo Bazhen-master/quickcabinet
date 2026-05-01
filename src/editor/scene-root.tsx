@@ -624,4 +624,38 @@ export function SceneRoot() {
       const existingDistance =
         Math.abs(existing.nextPosition.x - current.x) +
         Math.abs(existing.nextPosition.y - current.y) +
-        Ma
+        Math.abs(existing.nextPosition.z - current.z);
+      if (currentDistance < existingDistance) deduped.set(candidate.key, candidate);
+    });
+
+    return [...deduped.values()];
+  }, [experimentalMoveMode, selected, selectedPartIds, visibleParts]);
+
+  return <Canvas camera={{ position: [1600, 900, 1600], fov: 28, near: 10, far: 12000 }} gl={{ antialias: true }} onPointerMissed={() => selectPart(null)}>
+    <color attach="background" args={[isDarkBlue ? '#1b1b1d' : '#f5f5f4']} />
+    <ambientLight intensity={isDarkBlue ? 1.05 : 1.2} />
+    <directionalLight position={[700, 1200, 700]} intensity={isDarkBlue ? 1.1 : 1.25} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, floorVisualY, 0]} receiveShadow>
+      <planeGeometry args={[8000, 8000]} />
+      <meshStandardMaterial
+        color={isDarkBlue ? '#242629' : '#e5e7eb'}
+        map={floorTexture ?? undefined}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+    {showAxisIndicator ? <AxisIndicator parts={visibleParts} /> : null}
+    {visibleParts.length === 0 ? <EmptyHint /> : null}
+    {visibleParts.map((part) => <PartMesh key={part.id} part={part} />)}
+    <SectionOverlay />
+    <MeasurementOverlay />
+    {sceneSnapCandidates.map((candidate) => <SnapPreview key={candidate.key} candidate={candidate} />)}
+    {selected && sceneSnapCandidates.length > 0 ? (
+      <Html position={[0, 260, 0]} center>
+        <div style={{ background: isDarkBlue ? 'rgba(36,36,39,0.96)' : 'rgba(255,255,255,0.95)', border: `1px solid ${isDarkBlue ? '#4ade80' : '#d9f99d'}`, borderRadius: 10, padding: '8px 12px', color: isDarkBlue ? '#bbf7d0' : '#3f6212', fontSize: 13 }}>
+          {sceneSnapCandidates.length} {t(language, 'snapCandidates')}
+        </div>
+      </Html>
+    ) : null}
+    <CameraRig />
+  </Canvas>;
+}
