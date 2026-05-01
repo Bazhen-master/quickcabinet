@@ -512,6 +512,63 @@ export function SceneRoot() {
   const selectPart = useAppStore((s) => s.selectPart);
   const floorVisualY = -2.5;
   const visibleParts = useMemo(() => project.parts.filter((part) => !part.meta?.hidden), [project.parts]);
+  const floorTexture = useMemo(() => {
+    const size = 512;
+    const cell = 32;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    ctx.fillStyle = isDarkBlue ? '#1f2328' : '#e5e7eb';
+    ctx.fillRect(0, 0, size, size);
+
+    // Subtle checker base keeps depth perception without thin-line shimmer.
+    for (let y = 0; y < size; y += cell) {
+      for (let x = 0; x < size; x += cell) {
+        const isAlt = ((x / cell) + (y / cell)) % 2 === 0;
+        ctx.fillStyle = isAlt
+          ? (isDarkBlue ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)')
+          : 'rgba(0,0,0,0)';
+        ctx.fillRect(x, y, cell, cell);
+      }
+    }
+
+    // Draw thicker major lines and softer minor lines.
+    for (let i = 0; i <= size; i += cell) {
+      const major = i % (cell * 4) === 0;
+      ctx.strokeStyle = major
+        ? (isDarkBlue ? 'rgba(148,163,184,0.24)' : 'rgba(71,85,105,0.18)')
+        : (isDarkBlue ? 'rgba(148,163,184,0.12)' : 'rgba(71,85,105,0.09)');
+      ctx.lineWidth = major ? 1.6 : 1.1;
+      ctx.beginPath();
+      ctx.moveTo(i + 0.5, 0);
+      ctx.lineTo(i + 0.5, size);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, i + 0.5);
+      ctx.lineTo(size, i + 0.5);
+      ctx.stroke();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(16, 16);
+    texture.generateMipmaps = true;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.anisotropy = 8;
+    texture.needsUpdate = true;
+    return texture;
+  }, [isDarkBlue]);
+
+  useEffect(() => {
+    return () => {
+      floorTexture?.dispose();
+    };
+  }, [floorTexture]);
   const sceneSnapCandidates = useMemo<SceneSnapCandidate[]>(() => {
     if (!experimentalMoveMode || !selected) return [];
 
@@ -567,32 +624,4 @@ export function SceneRoot() {
       const existingDistance =
         Math.abs(existing.nextPosition.x - current.x) +
         Math.abs(existing.nextPosition.y - current.y) +
-        Math.abs(existing.nextPosition.z - current.z);
-      if (currentDistance < existingDistance) deduped.set(candidate.key, candidate);
-    });
-
-    return [...deduped.values()];
-  }, [experimentalMoveMode, selected, selectedPartIds, visibleParts]);
-
-  return <Canvas camera={{ position: [1600, 900, 1600], fov: 28, near: 10, far: 12000 }} gl={{ antialias: true }} onPointerMissed={() => selectPart(null)}>
-    <color attach="background" args={[isDarkBlue ? '#1b1b1d' : '#f5f5f4']} />
-    <ambientLight intensity={isDarkBlue ? 1.05 : 1.2} />
-    <directionalLight position={[700, 1200, 700]} intensity={isDarkBlue ? 1.1 : 1.25} />
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, floorVisualY, 0]} receiveShadow><planeGeometry args={[8000, 8000]} /><meshStandardMaterial color={isDarkBlue ? '#242629' : '#e5e7eb'} side={THREE.DoubleSide} /></mesh>
-    <gridHelper args={[8000, 80, isDarkBlue ? '#4b5563' : '#94a3b8', isDarkBlue ? '#2f3540' : '#cbd5e1']} position={[0, floorVisualY + 0.2, 0]} />
-    {showAxisIndicator ? <AxisIndicator parts={visibleParts} /> : null}
-    {visibleParts.length === 0 ? <EmptyHint /> : null}
-    {visibleParts.map((part) => <PartMesh key={part.id} part={part} />)}
-    <SectionOverlay />
-    <MeasurementOverlay />
-    {sceneSnapCandidates.map((candidate) => <SnapPreview key={candidate.key} candidate={candidate} />)}
-    {selected && sceneSnapCandidates.length > 0 ? (
-      <Html position={[0, 260, 0]} center>
-        <div style={{ background: isDarkBlue ? 'rgba(36,36,39,0.96)' : 'rgba(255,255,255,0.95)', border: `1px solid ${isDarkBlue ? '#4ade80' : '#d9f99d'}`, borderRadius: 10, padding: '8px 12px', color: isDarkBlue ? '#bbf7d0' : '#3f6212', fontSize: 13 }}>
-          {sceneSnapCandidates.length} {t(language, 'snapCandidates')}
-        </div>
-      </Html>
-    ) : null}
-    <CameraRig />
-  </Canvas>;
-}
+        Ma
