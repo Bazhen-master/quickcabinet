@@ -443,7 +443,7 @@ function CameraRig() {
       controlsRef.current.update();
       lastFocusVersionRef.current = cameraState.focusVersion;
     }
-    camera.near = 1; camera.far = 30000; camera.updateProjectionMatrix();
+    camera.near = 5; camera.far = 12000; camera.updateProjectionMatrix();
   }, [camera, cameraState, project]);
   return <OrbitControls ref={controlsRef} makeDefault maxPolarAngle={Math.PI / 2.05} enableDamping dampingFactor={0.08} />;
 }
@@ -579,7 +579,7 @@ export function SceneRoot() {
     <ambientLight intensity={isDarkBlue ? 1.05 : 1.2} />
     <directionalLight position={[700, 1200, 700]} intensity={isDarkBlue ? 1.1 : 1.25} />
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, floorVisualY, 0]} receiveShadow><planeGeometry args={[8000, 8000]} /><meshStandardMaterial color={isDarkBlue ? '#242629' : '#e5e7eb'} side={THREE.DoubleSide} /></mesh>
-    <gridHelper args={[8000, 80, isDarkBlue ? '#4b5563' : '#94a3b8', isDarkBlue ? '#2f3540' : '#cbd5e1']} position={[0, 1, 0]} />
+    <gridHelper args={[8000, 80, isDarkBlue ? '#4b5563' : '#94a3b8', isDarkBlue ? '#2f3540' : '#cbd5e1']} position={[0, floorVisualY + 0.2, 0]} />
     {showAxisIndicator ? <AxisIndicator parts={visibleParts} /> : null}
     {visibleParts.length === 0 ? <EmptyHint /> : null}
     {visibleParts.map((part) => <PartMesh key={part.id} part={part} />)}
@@ -596,4 +596,3 @@ export function SceneRoot() {
     <CameraRig />
   </Canvas>;
 }
-
