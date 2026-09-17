@@ -144,11 +144,13 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
         }
         // Recessed drawers (e.g. behind a door over them) move back as a whole; auto runners fit the depth that is left.
         const drawerRecess = Math.max(0, drawerStack.block?.recess ?? 0);
+        // A block may keep its own drawer front mode (inset drawers behind an overlay door, say).
+        const drawerFrontMode = drawerStack.block?.frontMode ?? frontMode;
         const effectiveRunnerLength = getEffectiveDrawerRunnerLength(drawerStack, depth - drawerRecess);
         const drawerGeometry = getDrawerGeometry(columnWidth, zone.clearHeight, drawerStack.drawerCount, effectiveRunnerLength, options.frontOpeningMode);
         const boxBottomInset = 24;
         // An overlay drawer front sits in front of the carcass, so the box comes up to the carcass front edge.
-        const boxDepthCenterZ = position.z + depth / 2 - drawerRecess - drawerGeometry.boxDepth / 2 - (frontMode === 'overlay' ? 0 : DRAWER_BOX_BACK_OFFSET);
+        const boxDepthCenterZ = position.z + depth / 2 - drawerRecess - drawerGeometry.boxDepth / 2 - (drawerFrontMode === 'overlay' ? 0 : DRAWER_BOX_BACK_OFFSET);
         // Overlay drawer fronts: each column of the block's zone is an opening (same gap rules as doors), its drawers share its height.
         // Between drawer fronts the gap is the doors' middle gap (26163 pencil: 4 between drawer fronts, as between doors).
         const overlayFacadeGap = options.frontOpeningMode === 'handles' ? HANDLED_FRONT_GAP : OVERLAY_FRONT_MIDDLE_GAP;
@@ -175,7 +177,7 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
             isTopTier: tierIndex === 0,
             hasDrawers: true,
           };
-          const rect = getFrontRect(zoneCell, zoneCell, { name, groupId, thickness, depth, position, frontMode, frontOpeningMode: options.frontOpeningMode, topOverFronts: topFrontOverhang > 0, floorClearance: getFloorClearance(options) });
+          const rect = getFrontRect(zoneCell, zoneCell, { name, groupId, thickness, depth, position, frontMode: drawerFrontMode, frontOpeningMode: options.frontOpeningMode, topOverFronts: topFrontOverhang > 0, floorClearance: getFloorClearance(options) });
           const count = Math.max(1, drawerStack.drawerCount);
           // Whole millimetres from the bottom up: the gaps stay exact and the remainder goes under the top edge.
           const height = Math.max(40, roundDownToMillimeter((rect.top - rect.bottom - overlayFacadeGap * (count - 1)) / count));
@@ -196,7 +198,7 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
           drawerIndex += 1;
           const stackIndexFromBottom = drawerStack.drawerCount - 1 - idx;
           const insetFacadeBottomY = zone.startY + bottomFacadeGap + stackIndexFromBottom * (drawerGeometry.facadeHeight + sharedFacadeGap);
-          const overlayFacade = frontMode === 'overlay' ? getOverlayDrawerFacade(column, stackIndexFromBottom) : null;
+          const overlayFacade = drawerFrontMode === 'overlay' ? getOverlayDrawerFacade(column, stackIndexFromBottom) : null;
           const facadeBottomY = overlayFacade ? overlayFacade.position.y - overlayFacade.height / 2 : insetFacadeBottomY;
           const facadeTopY = overlayFacade ? overlayFacade.position.y + overlayFacade.height / 2 : insetFacadeBottomY + drawerGeometry.facadeHeight;
           const facadeCenterY = (facadeBottomY + facadeTopY) / 2;

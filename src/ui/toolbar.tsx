@@ -7,6 +7,7 @@ import { saveProjectToFile, listSaveSlots, type SlotMeta } from '../infra/save-l
 import { t } from '../i18n';
 import { IconTrash } from './project-tree';
 import { FRONT_CHOICES } from './inspector';
+import { FrontIcon } from './front-icons';
 
 function IconPlus() {
   return (
@@ -430,16 +431,16 @@ export function Toolbar({
                   onClick={() => setFrontOnSelectedOpening({ kind: choice.kind, hinge: choice.hinge })}
                   title={t(language, choice.labelKey)}
                   aria-label={t(language, choice.labelKey)}
-                  style={{ ...toolbarButtonStyle(false), padding: '0 8px', fontSize: 15 }}
+                  style={{ ...toolbarButtonStyle(false), height: 42, minWidth: 46, padding: '0 7px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
                 >
-                  {choice.icon}
+                  <FrontIcon kind={choice.kind} hinge={choice.hinge} size={32} />
                 </button>
               ))}
               <button
                 onClick={() => setFrontOnSelectedOpening(null)}
                 title={t(language, 'removeFront')}
                 aria-label={t(language, 'removeFront')}
-                style={{ ...toolbarButtonStyle(false), padding: '0 8px' }}
+                style={{ ...toolbarButtonStyle(false), height: 42, minWidth: 42, padding: '0 8px', fontSize: 16 }}
               >
                 ✕
               </button>

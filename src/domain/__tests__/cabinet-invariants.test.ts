@@ -421,6 +421,15 @@ describe('fronts', () => {
         .map((part) => part.name);
       expect(hits, frontMode).toEqual([]);
       for (const drawerFront of byRole(covered, 'drawer-front')) expect(drawerFront.position.z + drawerFront.thickness / 2).toBeLessThanOrEqual(doorBack + 0.001);
+      // The drawers behind the door get inset fronts: inside the opening, whatever the cabinet's front mode.
+      expect(moduleOf(covered).layout.tiers!.flatMap((tier) => tier.layout.drawers ?? [])[0]!.block!.frontMode).toBe('inset');
+      for (const drawerFront of byRole(covered, 'drawer-front')) {
+        expect(drawerFront.position.x - drawerFront.width / 2, frontMode).toBeGreaterThan(drawerCell!.startX);
+        expect(drawerFront.position.x + drawerFront.width / 2, frontMode).toBeLessThan(drawerCell!.endX);
+      }
+      const carcass = covered.filter((part) => CARCASS_ROLES.has(part.meta?.role));
+      const frontHits = byRole(covered, 'drawer-front').flatMap((front) => carcass.filter((panel) => boundsIntersect(getBounds([front]), getBounds([panel]))).map((panel) => `${front.name} × ${panel.name}`));
+      expect(frontHits, frontMode).toEqual([]);
       expect(partsWithDrillConflicts(covered)).toEqual([]);
     }
 

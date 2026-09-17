@@ -421,7 +421,8 @@ const PartMesh = memo(function PartMesh({ part }: { part: Part }) {
   const isDarkBlue = themeMode === 'dark-blue';
   // Boolean selectors (like isHovered): selecting one part must not re-render every other part.
   const isSelected = useAppStore((s) => s.selectedPartIds.includes(part.id) || ((s.selected?.type === 'part' || s.selected?.type === 'face') && s.selected.partId === part.id));
-  const isGroupSelected = useAppStore((s) => s.selected?.type === 'group' && s.selected.groupId === part.meta?.groupId);
+  // The front tool selects the cabinet with each picked opening; tinting the whole cabinet would drown the picked opening.
+  const isGroupSelected = useAppStore((s) => s.activeTool !== 'place-front' && s.selected?.type === 'group' && s.selected.groupId === part.meta?.groupId);
   const showSingleLabel = useAppStore((s) => (s.selected?.type === 'part' || s.selected?.type === 'face') && s.selected.partId === part.id && s.selectedPartIds.length <= 1);
   const boxArgs = useMemo<[number, number, number]>(() => [part.width, part.height, part.thickness], [part.width, part.height, part.thickness]);
   const xrayOpacity = isSelected || isGroupSelected || isHovered ? 0.48 : 0.22;
@@ -623,10 +624,12 @@ function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; p
           && (!selectedSection.tierId || selectedSection.tierId === bottom.tierId)
           && (!selectedSection.zoneId || selectedSection.zoneId === zoneId);
         const isHovered = hoveredKey === key;
-        const color = inOpening || sectionActive ? '#f59e0b' : isHovered ? '#60a5fa' : '#94a3b8';
+        // Front tool: the picked opening in strong blue, drawn over the parts, so it reads through the x-ray and the wood tone.
+        const pickedColor = placingFronts ? '#2563eb' : '#f59e0b';
+        const color = inOpening || sectionActive ? pickedColor : isHovered ? (placingFronts ? '#7dd3fc' : '#60a5fa') : '#94a3b8';
         // The front tool lights every opening up; drawer cells are a little dimmer (a door may still cover them).
         const idleOpacity = placingFronts ? (hasDrawers ? 0.08 : 0.12) : 0.06;
-        const opacity = inOpening ? 0.38 : isHovered ? 0.2 : sectionActive ? 0.12 : pickedCells.length > 0 ? idleOpacity / 2 : idleOpacity;
+        const opacity = inOpening ? (placingFronts ? 0.5 : 0.38) : isHovered ? 0.2 : sectionActive ? 0.12 : pickedCells.length > 0 ? idleOpacity / 2 : idleOpacity;
         const width = Math.max(bottom.endX - bottom.startX, 8);
         const height = Math.max(top.endY - bottom.startY, 8);
         // One label per picked opening (on the overlay holding its top cell, with the whole size), or on the hovered one.
@@ -642,6 +645,7 @@ function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; p
         return (
           <group key={key} position={[(bottom.startX + bottom.endX) / 2, (bottom.startY + top.endY) / 2, planeZ]}>
             <mesh
+              renderOrder={inOpening ? 60 : 0}
               onPointerOver={(e) => { e.stopPropagation(); setHoveredKey(key); }}
               onPointerOut={(e) => { e.stopPropagation(); setHoveredKey((current) => current === key ? null : current); }}
               onClick={(e) => {
@@ -655,8 +659,8 @@ function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; p
               }}
             >
               <planeGeometry args={[width, height]} />
-              <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthWrite={false} />
-              {placingFronts || inOpening ? <Edges color={color} lineWidth={inOpening ? 3 : 1} /> : null}
+              <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthWrite={false} depthTest={!(placingFronts && inOpening)} />
+              {placingFronts || inOpening ? <Edges color={color} lineWidth={inOpening ? 4 : 1} depthTest={!inOpening} renderOrder={inOpening ? 61 : 0} /> : null}
             </mesh>
             {(showRangeLabel || isHovered) ? <Html position={[0, height / 2 + 18, 0]} center><div style={{ fontSize: 12, color: '#111', background: 'rgba(255,255,255,0.96)', padding: '2px 6px', borderRadius: 6, border: `1px solid ${color}`, whiteSpace: 'nowrap', pointerEvents: 'none' }}>{label}</div></Html> : null}
           </group>

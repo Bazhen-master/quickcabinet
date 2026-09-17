@@ -4,7 +4,7 @@ import { isDrillOperation } from '../domain/drill';
 import { useAppStore, useProject } from '../app/store';
 import { IconEye, IconTrash, ProjectTree } from './project-tree';
 import { DRAWER_RUNNER_LENGTHS, getAutoDrawerRunnerLength, getCabinetModuleState, getCabinetOpenings, getDefaultTierSection, getDrawerBlockFacadeHeight, getLeafSectionInnerSpan, getLeafTierSections, getLocalZonesForSection, getOpeningRange, type CabinetBackPanelKind, type CabinetPlinthKind } from '../domain/cabinet-builder';
-import { DEFAULT_DRAWER_FALSE_PANEL_GAP, DEFAULT_DRAWER_SLOT_HEIGHT, MAX_DRAWER_BLOCK_COLUMNS, MIN_DRAWER_SLOT_HEIGHT, getCabinetTierSpecs, type CabinetFrontHinge, type CabinetFrontKind, type DrawerBlockAnchor, type DrawerRunnerLength, type DrawerRunnerLengthMode, type DrawerRunnerType, type DrawerFalsePanelSpec } from '../domain/cabinet-layout';
+import { DEFAULT_DRAWER_FALSE_PANEL_GAP, DEFAULT_DRAWER_SLOT_HEIGHT, MAX_DRAWER_BLOCK_COLUMNS, MIN_DRAWER_SLOT_HEIGHT, getCabinetTierSpecs, type CabinetFrontHinge, type CabinetFrontKind, type DrawerBlockAnchor, type DrawerRunnerLength, type DrawerRunnerLengthMode, type DrawerRunnerType, type DrawerFalsePanelSpec, type DrawerFrontMode } from '../domain/cabinet-layout';
 import { buildSnapCandidates, formatBoundsSize, getBounds, type RelativePlacementRule } from '../domain/geometry';
 import { createEmptySideJoinery, type JoineryType } from '../domain/joinery';
 import { t, type Lang } from '../i18n';
@@ -13,6 +13,7 @@ import { MAX_PART_SIZE_MM } from '../domain/part';
 import { planModuleSplit, type SplitAxis } from '../domain/module-split';
 import { SheetLimitHint } from './sheet-limit-hint';
 import { CABINET_PRESETS } from '../domain/cabinet-presets';
+import { FrontIcon } from './front-icons';
 
 const EGGER_COLORS: { article: string; name: string; hex: string }[] = [
   { article: 'W980 ST2',    name: 'Белый',               hex: '#F5F2ED' },
@@ -165,12 +166,12 @@ const INSPECTOR_CSS = `
 .insp-toggle:focus-visible { outline: 2px solid #f59e0b; outline-offset: -2px; }
 `;
 
-export const FRONT_CHOICES: Array<{ kind: CabinetFrontKind; hinge: CabinetFrontHinge; icon: string; labelKey: string }> = [
-  { kind: 'door', hinge: 'left', icon: '◧', labelKey: 'frontDoorLeft' },
-  { kind: 'door', hinge: 'right', icon: '◨', labelKey: 'frontDoorRight' },
-  { kind: 'double', hinge: 'left', icon: '◫', labelKey: 'frontDouble' },
-  { kind: 'flap', hinge: 'top', icon: '⬒', labelKey: 'frontFlapUp' },
-  { kind: 'flap', hinge: 'bottom', icon: '⬓', labelKey: 'frontFlapDown' },
+export const FRONT_CHOICES: Array<{ kind: CabinetFrontKind; hinge: CabinetFrontHinge; labelKey: 'frontDoorLeft' | 'frontDoorRight' | 'frontDouble' | 'frontFlapUp' | 'frontFlapDown' }> = [
+  { kind: 'door', hinge: 'left', labelKey: 'frontDoorLeft' },
+  { kind: 'door', hinge: 'right', labelKey: 'frontDoorRight' },
+  { kind: 'double', hinge: 'left', labelKey: 'frontDouble' },
+  { kind: 'flap', hinge: 'top', labelKey: 'frontFlapUp' },
+  { kind: 'flap', hinge: 'bottom', labelKey: 'frontFlapDown' },
 ];
 
 /** The drawer settings collapse state is a per-viewer convenience kept across reloads. */
@@ -642,7 +643,9 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
     withBackPanel: true,
     fill: false,
     falsePanel: null as DrawerFalsePanelSpec | null,
-    recess: 0,
+    // null = not set on the block (recess 0, the cabinet's front mode) — a door put over the block may set them.
+    recess: null as number | null,
+    frontMode: null as DrawerFrontMode | null,
     runnerLengthMode: 'auto' as DrawerRunnerLengthMode,
     runnerLength: 450 as DrawerRunnerLength,
   });
@@ -662,12 +665,13 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
         withBackPanel: activeDrawerBlock.block.withBackPanel,
         fill: Boolean(activeDrawerBlock.block.fill),
         falsePanel: activeDrawerBlock.block.falsePanel ?? null,
-        recess: activeDrawerBlock.block.recess ?? 0,
+        recess: activeDrawerBlock.block.recess ?? null,
+        frontMode: activeDrawerBlock.block.frontMode ?? null,
         runnerLengthMode: activeDrawerBlock.runnerLengthMode ?? 'manual',
         runnerLength: activeDrawerBlock.runnerLength,
       }
     : drawerBlockDraft;
-  const activeAutoDrawerRunnerLength = getAutoDrawerRunnerLength((moduleState?.depth ?? cabinetDraft.depth) - drawerBlockValues.recess);
+  const activeAutoDrawerRunnerLength = getAutoDrawerRunnerLength((moduleState?.depth ?? cabinetDraft.depth) - (drawerBlockValues.recess ?? 0));
   const drawerNicheSpan = drawerBlockValues.offset > 0 ? drawerBlockValues.offset + (moduleState?.thickness ?? 16) : 0;
   // A full-height block has no inner divider and no drawer height of its own: only the minimum drawer height limits it.
   const maxBlockDrawerCount = activeSection && moduleState
@@ -689,7 +693,8 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
     withBackPanel: values.withBackPanel,
     fill: values.fill,
     falsePanel: values.falsePanel ?? undefined,
-    recess: values.recess,
+    recess: values.recess ?? undefined,
+    frontMode: values.frontMode ?? undefined,
     runnerType: 'hidden-unihoper',
     runnerLengthMode: values.runnerLengthMode,
     runnerLength: values.runnerLengthMode === 'auto' ? activeAutoDrawerRunnerLength : values.runnerLength,
@@ -1591,10 +1596,22 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
                   <input type="checkbox" checked={drawerBlockValues.withBackPanel} onChange={(e) => updateDrawerBlockField({ withBackPanel: e.target.checked })} />
                   {language === 'ru' ? 'Задняя стенка блока' : 'Block back panel'}
                 </label>
-                <div style={{ marginTop: 8 }}>
+                <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', marginTop: 8 }}>
+                  <label>
+                    <div style={fieldLabelStyle}>{t(language, 'drawerFrontMode')}</div>
+                    <select
+                      value={drawerBlockValues.frontMode ?? 'cabinet'}
+                      onChange={(e) => updateDrawerBlockField({ frontMode: e.target.value === 'cabinet' ? null : e.target.value as DrawerFrontMode })}
+                      style={selectControlStyle}
+                    >
+                      <option style={optionStyle} value="cabinet">{`${t(language, 'drawerFrontModeCabinet')} · ${t(language, moduleState.frontMode === 'inset' ? 'insetFronts' : 'overlayFronts').toLowerCase()}`}</option>
+                      <option style={optionStyle} value="inset">{t(language, 'insetFronts')}</option>
+                      <option style={optionStyle} value="overlay">{t(language, 'overlayFronts')}</option>
+                    </select>
+                  </label>
                   <NumberField
                     label={t(language, 'drawerRecess')}
-                    value={drawerBlockValues.recess}
+                    value={drawerBlockValues.recess ?? 0}
                     onChange={(value) => updateDrawerBlockField({ recess: Math.max(0, Math.min(200, Math.round(value))) })}
                   />
                 </div>
@@ -1690,9 +1707,10 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
                         key={choice.labelKey}
                         aria-pressed={active}
                         onClick={() => setFrontOnSelectedOpening({ kind: choice.kind, hinge: choice.hinge })}
-                        style={{ ...gridButtonStyle, ...(active ? { border: '1px solid #f59e0b', fontWeight: 700 } : null) }}
+                        style={{ ...gridButtonStyle, display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', ...(active ? { border: '1px solid #f59e0b', fontWeight: 700 } : null) }}
                       >
-                        {`${choice.icon} ${t(language, choice.labelKey)}`}
+                        <FrontIcon kind={choice.kind} hinge={choice.hinge} size={26} />
+                        <span style={{ minWidth: 0 }}>{t(language, choice.labelKey)}</span>
                       </button>
                     );
                   })}

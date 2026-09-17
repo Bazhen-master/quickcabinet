@@ -317,15 +317,20 @@ export function setFrontOnOpening(parts: Part[], groupId: string, ref: CabinetOp
   const targetCells = target.cells.slice(target.from, target.to + 1);
   const bottom = targetCells[0]!;
   const { tierId: frontTierId, ...openingRef } = toOpeningRef(bottom, targetCells[targetCells.length - 1]!);
-  // A door over drawers: drawers that were never set back go back by the default recess, so their fronts clear the door.
+  // A door over drawers: drawers left at their defaults get inset fronts (they must fit inside the opening),
+  // set back behind an inset door; an overlay door stands in front of the carcass, so no recess is needed.
   let layout = module.layout;
   if (front) {
     const drawerFronts = parts.filter((part) => part.meta?.groupId === groupId && part.meta?.role === 'drawer-front');
     getCabinetTierSpecs(layout).flatMap((tier) => tier.layout.drawers ?? []).forEach((stack) => {
-      if (!stack.block || stack.block.recess !== undefined) return;
+      if (!stack.block || (stack.block.recess !== undefined && stack.block.frontMode !== undefined)) return;
       const covered = drawerFronts.some((part) => (part.meta?.sourceId ?? '').startsWith(`${stack.id}:`)
         && targetCells.some((cell) => cell.hasDrawers && part.position.x > cell.startX && part.position.x < cell.endX && part.position.y > cell.startY && part.position.y < cell.endY));
-      if (covered) layout = updateDrawerBlock(layout, stack.id, { recess: DEFAULT_DRAWER_RECESS_BEHIND_DOOR });
+      if (!covered) return;
+      layout = updateDrawerBlock(layout, stack.id, {
+        frontMode: stack.block.frontMode ?? 'inset',
+        recess: stack.block.recess ?? (module.frontMode === 'inset' ? DEFAULT_DRAWER_RECESS_BEHIND_DOOR : 0),
+      });
     });
   }
   return updateAllFronts(layout, (fronts, tierId) => [

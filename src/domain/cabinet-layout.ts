@@ -99,7 +99,11 @@ export type CabinetDrawerBlockSpec = {
   falsePanel?: DrawerFalsePanelSpec;
   /** Drawers (fronts and boxes) set back from the carcass front, mm — e.g. behind a door put over them. Unset = 0. */
   recess?: number;
+  /** Drawer fronts of this block: inset or overlay; unset = the cabinet's front mode. */
+  frontMode?: DrawerFrontMode;
 };
+
+export type DrawerFrontMode = 'inset' | 'overlay';
 
 export type DrawerFalsePanelSpec = {
   side: 'left' | 'right';
@@ -124,6 +128,7 @@ export type DrawerBlockInput = {
   fill?: boolean;
   falsePanel?: DrawerFalsePanelSpec;
   recess?: number;
+  frontMode?: DrawerFrontMode;
 };
 
 export const DEFAULT_DRAWER_SLOT_HEIGHT = 200;
@@ -949,7 +954,8 @@ export function upsertDrawerBlockInSection(
       columns: Math.max(1, Math.min(MAX_DRAWER_BLOCK_COLUMNS, Math.round(input.columns))),
       withBackPanel: input.withBackPanel,
       fill: Boolean(input.fill),
-      ...(input.recess ? { recess: Math.max(0, Math.round(input.recess)) } : {}),
+      ...(input.recess !== undefined ? { recess: Math.max(0, Math.round(input.recess)) } : {}),
+      ...(input.frontMode ? { frontMode: input.frontMode } : {}),
       ...(input.falsePanel ? { falsePanel: { side: input.falsePanel.side, gap: Math.max(0, Math.round(input.falsePanel.gap)) } } : {}),
     },
   };
@@ -964,7 +970,7 @@ export function upsertDrawerBlockInSection(
   return { layout: withTierSpecs(tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: nextTierLayout } : tier)), drawerStack };
 }
 
-export function updateDrawerBlock(layout: CabinetLayout, drawerId: string, patch: Partial<Pick<CabinetDrawerBlockSpec, 'columns' | 'slotHeight' | 'withBackPanel' | 'offset' | 'fill' | 'falsePanel' | 'recess'>>): CabinetLayout {
+export function updateDrawerBlock(layout: CabinetLayout, drawerId: string, patch: Partial<Pick<CabinetDrawerBlockSpec, 'columns' | 'slotHeight' | 'withBackPanel' | 'offset' | 'fill' | 'falsePanel' | 'recess' | 'frontMode'>>): CabinetLayout {
   const tierIndex = findTierIndexByDrawerId(layout, drawerId);
   if (tierIndex < 0) return layout;
   const tiers = getTierSpecs(layout);
