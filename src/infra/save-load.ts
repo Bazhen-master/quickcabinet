@@ -1,5 +1,7 @@
 import type { Project } from '../domain/project';
 import { createPanelPart, type Part } from '../domain/part';
+import { isValidSketch, nameGenericSketches, normalizeSketch } from '../domain/sketch';
+import { idbDelete, idbGet, idbSet } from './idb';
 
 const PROJECT_PROGRESS_STORAGE_KEY = 'furniture_v9:project-progress';
 
@@ -19,6 +21,8 @@ function normalizeProject(project: Project): Project {
         operations: Array.isArray(part.operations) ? part.operations : [],
       })
     ),
+    // Language is not known at load time; the UI is Russian-first, so legacy generic names become "Эскиз N".
+    sketches: Array.isArray(project.sketches) ? nameGenericSketches(project.sketches.filter(isValidSketch).map(normalizeSketch), 'Эскиз') : [],
   };
 }
 
@@ -32,41 +36,63 @@ export function saveProjectToFile(project: Project, fileName = 'project.furnitur
   URL.revokeObjectURL(url);
 }
 
-function canUseStorage() {
-  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
-}
-
-export function saveProjectProgress(project: Project) {
-  if (!canUseStorage()) return;
-  window.localStorage.setItem(PROJECT_PROGRESS_STORAGE_KEY, JSON.stringify(project));
-}
-
-export function trySaveProjectProgress(project: Project) {
-  if (!canUseStorage()) {
-    return { ok: false as const, error: 'Storage is unavailable in this environment' };
-  }
+// Projects live in IndexedDB (structured clone, no JSON round-trip, no ~5 MB localStorage quota).
+export async function saveProjectProgress(project: Project): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    window.localStorage.setItem(PROJECT_PROGRESS_STORAGE_KEY, JSON.stringify(project));
-    return { ok: true as const };
+    await idbSet(PROJECT_PROGRESS_STORAGE_KEY, project);
+    return { ok: true };
   } catch {
-    return { ok: false as const, error: 'Could not save project progress to local storage' };
+    return { ok: false, error: 'Could not save the project to browser storage' };
   }
 }
 
-export function loadSavedProjectProgress(): Project | null {
-  if (!canUseStorage()) return null;
-  const raw = window.localStorage.getItem(PROJECT_PROGRESS_STORAGE_KEY);
-  if (!raw) return null;
+export async function loadSavedProjectProgress(): Promise<Project | null> {
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    return isValidProject(parsed) ? normalizeProject(parsed) : null;
+    const stored = await idbGet<unknown>(PROJECT_PROGRESS_STORAGE_KEY);
+    return isValidProject(stored) ? normalizeProject(stored) : null;
   } catch {
     return null;
   }
 }
 
-export function hasSavedProjectProgress() {
-  return loadSavedProjectProgress() !== null;
+const SLOT_COUNT = 5;
+const slotKey = (slot: number) => `furniture_v9:slot:${slot}`;
+const slotMetaKey = (slot: number) => `furniture_v9:slot:${slot}:meta`;
+
+export type SlotMeta = { name: string; savedAt: string; partCount: number };
+
+export async function listSaveSlots(): Promise<Array<{ slot: number; meta: SlotMeta | null }>> {
+  return Promise.all(Array.from({ length: SLOT_COUNT }, async (_, slot) => {
+    try {
+      return { slot, meta: (await idbGet<SlotMeta>(slotMetaKey(slot))) ?? null };
+    } catch {
+      return { slot, meta: null };
+    }
+  }));
+}
+
+export async function saveToSlot(slot: number, project: Project): Promise<void> {
+  await idbSet(slotKey(slot), project);
+  const meta: SlotMeta = {
+    name: project.name,
+    savedAt: new Date().toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }),
+    partCount: project.parts.length,
+  };
+  await idbSet(slotMetaKey(slot), meta);
+}
+
+export async function loadFromSlot(slot: number): Promise<Project | null> {
+  try {
+    const stored = await idbGet<unknown>(slotKey(slot));
+    return isValidProject(stored) ? normalizeProject(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteSaveSlot(slot: number): Promise<void> {
+  await idbDelete(slotKey(slot));
+  await idbDelete(slotMetaKey(slot));
 }
 
 export function openProjectFromFile(): Promise<{ ok: true; project: Project } | { ok: false; error: string }> {

@@ -6,6 +6,31 @@ export type HorizontalCabinetLayout = {
   drawers?: CabinetDrawerStackSpec[];
   tierDividers?: CabinetSectionTierDividerSpec[];
   sectionWidths?: number[];
+  fronts?: CabinetFrontSpec[];
+};
+
+export type CabinetFrontKind = 'door' | 'double' | 'flap';
+export type CabinetFrontHinge = 'left' | 'right' | 'top' | 'bottom';
+
+/** Opening edge ids for the tier's own lower/upper edge (bottom panel or tier divider below, top panel or divider above). */
+export const OPENING_EDGE_BOTTOM = 'tier-bottom';
+export const OPENING_EDGE_TOP = 'tier-top';
+
+/**
+ * A front over an opening of one section: from its bottom boundary up to its top boundary, covering the shelves between.
+ * Boundaries are shelf / local divider ids (or the tier edges), so a front follows them when they move.
+ */
+export type CabinetFrontSpec = {
+  id: string;
+  sectionId: string;
+  bottomBoundaryId: string;
+  topBoundaryId: string;
+  /** Set when the top boundary is in a tier above: the front spans the lined-up sections through the tier dividers. */
+  topTierId?: string;
+  topSectionId?: string;
+  kind: CabinetFrontKind;
+  /** Door: left/right; flap: top (lifts up) or bottom (folds down); a double door ignores it. */
+  hinge: CabinetFrontHinge;
 };
 
 export type CabinetTierSpec = {
@@ -30,6 +55,10 @@ export type CabinetShelfSpec = {
   id: string;
   sectionId: string;
   zoneId?: string;
+  /** Manually placed shelf: center Y above the cabinet base (mm). Unset = evenly distributed in its zone. */
+  elevation?: number;
+  /** Apron under the shelf at the back; top/bottom aprons follow the cabinet option instead. */
+  withApron?: boolean;
 };
 
 export type DrawerRunnerType = 'hidden-unihoper';
@@ -45,7 +74,46 @@ export type CabinetDrawerStackSpec = {
   runnerLength: DrawerRunnerLength;
   runnerLengthMode?: DrawerRunnerLengthMode;
   withInnerFrontPanel?: boolean;
+  /** Set for stacks added as a drawer block; legacy stacks live in a zone picked by `zoneId`. */
+  block?: CabinetDrawerBlockSpec;
 };
+
+export type DrawerBlockAnchor = 'bottom' | 'top';
+
+/** One-click drawer block: owns the local dividers bounding it; its height follows the drawer count. */
+export type CabinetDrawerBlockSpec = {
+  anchor: DrawerBlockAnchor;
+  /** Divider on the inner side of the block (above a bottom block, below a top one). */
+  dividerId: string;
+  /** Divider between the block and the section edge; present only when `offset` leaves a niche. */
+  baseDividerId?: string;
+  /** Clear niche between the section edge and the block, mm. */
+  offset?: number;
+  /** Height per drawer, mm: block height = drawerCount × slotHeight. */
+  slotHeight: number;
+  columns: number;
+  withBackPanel: boolean;
+  /** Drawers take the whole section beyond the niche: no inner divider is built and slotHeight is not used. */
+  fill?: boolean;
+};
+
+export type DrawerBlockInput = {
+  anchor: DrawerBlockAnchor;
+  offset: number;
+  drawerCount: number;
+  columns: number;
+  slotHeight: number;
+  withBackPanel: boolean;
+  runnerType: DrawerRunnerType;
+  runnerLength: DrawerRunnerLength;
+  runnerLengthMode: DrawerRunnerLengthMode;
+  fill?: boolean;
+};
+
+export const DEFAULT_DRAWER_SLOT_HEIGHT = 200;
+export const MIN_DRAWER_SLOT_HEIGHT = 100;
+export const MAX_DRAWER_BLOCK_COLUMNS = 3;
+export const MAX_SECTION_TIER_DIVIDERS = 4;
 
 export type CabinetSectionTierDividerSpec = {
   id: string;
@@ -117,6 +185,7 @@ function toHorizontalLayout(layout: CabinetLayout): HorizontalCabinetLayout {
     drawers: layout.drawers,
     tierDividers: layout.tierDividers,
     sectionWidths: layout.sectionWidths,
+    fronts: layout.fronts,
   };
 }
 
@@ -128,14 +197,19 @@ function withTierSpecs(tiers: CabinetTierSpec[]): CabinetLayout {
     drawers: primary.drawers,
     tierDividers: primary.tierDividers,
     sectionWidths: primary.sectionWidths,
+    fronts: primary.fronts,
     tiers,
   };
 }
 
 function getTierSpecs(layout: CabinetLayout): CabinetTierSpec[] {
-  return layout.tiers?.length
-    ? layout.tiers
-    : [{ id: ROOT_TIER_ID, heightRatio: 1, layout: toHorizontalLayout(layout) }];
+  if (!layout.tiers?.length) return [{ id: ROOT_TIER_ID, heightRatio: 1, layout: toHorizontalLayout(layout) }];
+  // Older cabinets stored a whole tiered layout inside tier 0 (see createCabinetLayout). Edits always update the
+  // tier's own top-level fields, while resolving read the stale nested copy, so upper-tier edits had no effect.
+  const hasNestedTiers = layout.tiers.some((tier) => Boolean((tier.layout as CabinetLayout).tiers));
+  return hasNestedTiers
+    ? layout.tiers.map((tier) => ((tier.layout as CabinetLayout).tiers ? { ...tier, layout: toHorizontalLayout(tier.layout) } : tier))
+    : layout.tiers;
 }
 
 function cloneHorizontalLayout(layout: HorizontalCabinetLayout): HorizontalCabinetLayout {
@@ -152,6 +226,7 @@ function cloneHorizontalLayout(layout: HorizontalCabinetLayout): HorizontalCabin
   [...sectionIds]
     .filter((id) => id !== ROOT_SECTION_ID)
     .forEach((id) => sectionIdMap.set(id, createId('section')));
+  const dividerIdMap = new Map((layout.tierDividers ?? []).map((divider) => [divider.id, createId('section-tier-divider')] as const));
 
   return {
     partitions: layout.partitions.map((partition) => ({
@@ -164,18 +239,28 @@ function cloneHorizontalLayout(layout: HorizontalCabinetLayout): HorizontalCabin
     shelves: layout.shelves.map((shelf) => ({
       id: createId('shelf'),
       sectionId: sectionIdMap.get(shelf.sectionId) ?? shelf.sectionId,
+      elevation: shelf.elevation,
     })),
     drawers: layout.drawers?.map((drawer) => ({
       ...drawer,
       id: createId('drawer-stack'),
       sectionId: sectionIdMap.get(drawer.sectionId) ?? drawer.sectionId,
+      block: drawer.block
+        ? {
+            ...drawer.block,
+            dividerId: dividerIdMap.get(drawer.block.dividerId) ?? drawer.block.dividerId,
+            baseDividerId: drawer.block.baseDividerId ? dividerIdMap.get(drawer.block.baseDividerId) ?? drawer.block.baseDividerId : undefined,
+          }
+        : undefined,
     })),
     tierDividers: layout.tierDividers?.map((divider) => ({
       ...divider,
-      id: createId('section-tier-divider'),
+      id: dividerIdMap.get(divider.id) ?? createId('section-tier-divider'),
       sectionId: sectionIdMap.get(divider.sectionId) ?? divider.sectionId,
     })),
     sectionWidths: layout.sectionWidths ? [...layout.sectionWidths] : undefined,
+    // Fronts point at the old shelf/divider ids, which the clone does not keep.
+    fronts: [],
   };
 }
 
@@ -183,14 +268,6 @@ function clampLocalTierDividerRatio(value: number) {
   return Math.max(MIN_LOCAL_TIER_DIVIDER_RATIO, Math.min(1 - MIN_LOCAL_TIER_DIVIDER_RATIO, value));
 }
 
-function rebalanceSectionTierDividers(dividers: CabinetSectionTierDividerSpec[]) {
-  if (dividers.length <= 0) return [];
-  const ordered = [...dividers].sort((a, b) => a.positionRatio - b.positionRatio);
-  return ordered.map((divider, index) => ({
-    ...divider,
-    positionRatio: (index + 1) / (ordered.length + 1),
-  }));
-}
 
 function findTierIndexBySectionId(layout: CabinetLayout, sectionId: string) {
   return getTierSpecs(layout).findIndex((tier) => collectLeafOrder(tier.layout).includes(sectionId));
@@ -261,6 +338,22 @@ function normalizeSectionWidths(widths: number[], innerWidth: number) {
   const total = sanitized.reduce((sum, value) => sum + value, 0);
   if (total <= 0) return Array.from({ length: sanitized.length }, () => innerWidth / Math.max(sanitized.length, 1));
   return sanitized.map((value) => (value / total) * innerWidth);
+}
+
+function normalizeSectionWidthsPinned(widths: number[], innerWidth: number, pinnedIndex: number): number[] {
+  const n = widths.length;
+  if (n === 0) return [];
+  if (n === 1) return [innerWidth];
+  const minWidth = 1;
+  const maxPinned = innerWidth - (n - 1) * minWidth;
+  const pinned = Math.max(minWidth, Math.min(maxPinned, Number.isFinite(widths[pinnedIndex]) ? widths[pinnedIndex]! : minWidth));
+  const remaining = innerWidth - pinned;
+  const others = widths.map((w, i) => (i !== pinnedIndex ? Math.max(minWidth, Number.isFinite(w) && w > 0 ? w : minWidth) : 0));
+  const othersTotal = others.reduce((sum, w) => sum + w, 0);
+  return widths.map((_, i) => {
+    if (i === pinnedIndex) return pinned;
+    return othersTotal > 0 ? (others[i]! / othersTotal) * remaining : remaining / (n - 1);
+  });
 }
 
 function buildResolvedStructure(layout: HorizontalCabinetLayout, innerWidth: number, thickness: number): { sections: Map<string, SectionNode>; partitions: ResolvedCabinetPartition[]; leafOrder: string[] } {
@@ -403,7 +496,8 @@ export function createCabinetLayout(partitionCount = 0, shelfCount = 0): Cabinet
         ?? resolved.leafSections[resolved.leafSections.length - 1];
       if (!target) return;
       const splitRatio = Math.max(0.2, Math.min(0.8, (boundary - target.startX) / Math.max(target.endX - target.startX, 1)));
-      layout = splitSection(layout, target.id, splitRatio).layout;
+      // splitSection returns a tiered layout; keep only the horizontal part so tier 0 has no nested tiers.
+      layout = toHorizontalLayout(splitSection(layout, target.id, splitRatio).layout);
     });
   }
 
@@ -413,7 +507,7 @@ export function createCabinetLayout(partitionCount = 0, shelfCount = 0): Cabinet
     for (let idx = 0; idx < shelfCount; idx += 1) {
       const section = leaves[idx % Math.max(leaves.length, 1)];
       if (!section) break;
-      layout = addShelfToSection(layout, section.id).layout;
+      layout = toHorizontalLayout(addShelfToSection(layout, section.id).layout);
     }
   }
 
@@ -464,7 +558,11 @@ function splitSectionInHorizontalLayout(layout: HorizontalCabinetLayout, section
     partitions: [...layout.partitions, partition],
     shelves,
     drawers: layout.drawers?.map((drawer) => (drawer.sectionId === sectionId ? { ...drawer, sectionId: partition.leftSectionId } : drawer)),
+    // Local dividers follow the section's shelves and drawers into the left half; other sections keep theirs.
+    tierDividers: layout.tierDividers?.map((divider) => (divider.sectionId === sectionId ? { ...divider, sectionId: partition.leftSectionId } : divider)),
     sectionWidths: layout.sectionWidths,
+    // Fronts follow their shelves into the left half.
+    fronts: layout.fronts?.map((front) => (front.sectionId === sectionId ? { ...front, sectionId: partition.leftSectionId } : front)),
   };
 
   if (!layout.sectionWidths) {
@@ -490,92 +588,9 @@ function splitSectionInHorizontalLayout(layout: HorizontalCabinetLayout, section
 }
 
 function addShelfToHorizontalSection(layout: HorizontalCabinetLayout, sectionId: string, zoneId?: string): { layout: HorizontalCabinetLayout; shelf: CabinetShelfSpec } {
+  // Adds only the shelf: drawers stay (the builder keeps shelves out of drawer-block zones).
   const shelf: CabinetShelfSpec = { id: createId('shelf'), sectionId, zoneId };
-  const hasSectionTierDivider = (layout.tierDividers?.some((divider) => divider.sectionId === sectionId)) ?? false;
-  return {
-    layout: {
-      ...layout,
-      shelves: [...layout.shelves, shelf],
-      drawers: hasSectionTierDivider
-        ? layout.drawers
-        : layout.drawers?.filter((drawer) => drawer.sectionId !== sectionId),
-    },
-    shelf,
-  };
-}
-
-function addSectionTierDividerToHorizontalSection(layout: HorizontalCabinetLayout, sectionId: string): { layout: HorizontalCabinetLayout; divider: CabinetSectionTierDividerSpec } {
-  const existing = layout.tierDividers?.filter((divider) => divider.sectionId === sectionId) ?? [];
-  if (existing.length >= 2) {
-    return { layout, divider: existing[existing.length - 1]! };
-  }
-  const divider: CabinetSectionTierDividerSpec = { id: createId('section-tier-divider'), sectionId, positionRatio: 0.5 };
-  const nextSectionDividers = rebalanceSectionTierDividers([...existing, divider]);
-  const nextSectionDividerById = new Map(nextSectionDividers.map((item) => [item.id, item]));
-  return {
-    layout: {
-      ...layout,
-      drawers: layout.drawers?.filter((drawer) => drawer.sectionId !== sectionId),
-      tierDividers: [
-        ...((layout.tierDividers ?? []).filter((item) => item.sectionId !== sectionId)),
-        ...nextSectionDividers,
-      ],
-    },
-    divider: nextSectionDividerById.get(divider.id) ?? divider,
-  };
-}
-
-function upsertDrawerStackInHorizontalSection(
-  layout: HorizontalCabinetLayout,
-  sectionId: string,
-  zoneId: string | undefined,
-  drawerCount: number,
-  runnerType: DrawerRunnerType,
-  runnerLength: DrawerRunnerLength,
-  runnerLengthMode: DrawerRunnerLengthMode = 'manual'
-): { layout: HorizontalCabinetLayout; drawerStack: CabinetDrawerStackSpec | null } {
-  const hasSectionTierDivider = (layout.tierDividers?.some((divider) => divider.sectionId === sectionId)) ?? false;
-  if (drawerCount <= 0) {
-    return {
-      layout: {
-        ...layout,
-        drawers: layout.drawers?.filter((drawer) => (
-          hasSectionTierDivider
-            ? !(drawer.sectionId === sectionId && (drawer.zoneId ?? '') === (zoneId ?? ''))
-            : drawer.sectionId !== sectionId
-        )),
-      },
-      drawerStack: null,
-    };
-  }
-
-  const existingDrawer = layout.drawers?.find((drawer) => (
-    hasSectionTierDivider
-      ? drawer.sectionId === sectionId && (drawer.zoneId ?? '') === (zoneId ?? '')
-      : drawer.sectionId === sectionId
-  ));
-  const drawerStack: CabinetDrawerStackSpec = existingDrawer
-    ? { ...existingDrawer, drawerCount: Math.max(1, Math.round(drawerCount)), runnerType, runnerLength, runnerLengthMode, zoneId }
-    : { id: createId('drawer-stack'), sectionId, zoneId, drawerCount: Math.max(1, Math.round(drawerCount)), runnerType, runnerLength, runnerLengthMode };
-
-  return {
-    layout: {
-      ...layout,
-      shelves: hasSectionTierDivider
-        ? layout.shelves
-        : layout.shelves.filter((shelf) => shelf.sectionId !== sectionId),
-      tierDividers: layout.tierDividers,
-      drawers: [
-        ...(layout.drawers ?? []).filter((drawer) => (
-          hasSectionTierDivider
-            ? !(drawer.sectionId === sectionId && (drawer.zoneId ?? '') === (zoneId ?? ''))
-            : drawer.sectionId !== sectionId
-        )),
-        drawerStack,
-      ],
-    },
-      drawerStack,
-    };
+  return { layout: { ...layout, shelves: [...layout.shelves, shelf] }, shelf };
 }
 
 function removeShelfInHorizontalLayout(layout: HorizontalCabinetLayout, shelfId: string): HorizontalCabinetLayout {
@@ -586,18 +601,8 @@ function removeShelfInHorizontalLayout(layout: HorizontalCabinetLayout, shelfId:
 }
 
 function removeSectionTierDividerInHorizontalLayout(layout: HorizontalCabinetLayout, dividerId: string): HorizontalCabinetLayout {
-  const target = layout.tierDividers?.find((divider) => divider.id === dividerId);
-  if (!target) return layout;
-  const nextSectionDividers = rebalanceSectionTierDividers(
-    (layout.tierDividers ?? []).filter((divider) => divider.sectionId === target.sectionId && divider.id !== dividerId)
-  );
-  return {
-    ...layout,
-    tierDividers: [
-      ...((layout.tierDividers ?? []).filter((divider) => divider.sectionId !== target.sectionId && divider.id !== dividerId)),
-      ...nextSectionDividers,
-    ],
-  };
+  // The other dividers stay exactly where they are.
+  return { ...layout, tierDividers: layout.tierDividers?.filter((divider) => divider.id !== dividerId) };
 }
 
 function updateSectionTierDividerPositionInHorizontalLayout(
@@ -642,23 +647,28 @@ function removePartitionInHorizontalLayout(layout: HorizontalCabinetLayout, part
   ), 0);
 
   const nextPartitions = layout.partitions.filter((partition) => !subtree.removedPartitionIds.has(partition.id));
-  const nextDrawers = new Map<string, CabinetDrawerStackSpec>();
-  layout.drawers?.forEach((drawer) => {
-    const nextSectionId = subtree.descendantLeaves.has(drawer.sectionId)
-      ? subtree.target.parentSectionId
-      : drawer.sectionId;
-    if (!nextDrawers.has(nextSectionId)) {
-      nextDrawers.set(nextSectionId, { ...drawer, sectionId: nextSectionId });
-    }
+  // The merged section gets one consistent set of dividers and drawers (a drawer block needs its own dividers):
+  // those of the first merged section that has any. Sections outside the removed subtree keep everything.
+  const parentSectionId = subtree.target.parentSectionId;
+  const donorSectionId = currentLeafOrder
+    .filter((sectionId) => subtree.descendantLeaves.has(sectionId))
+    .find((sectionId) => (layout.tierDividers ?? []).some((divider) => divider.sectionId === sectionId)
+      || (layout.drawers ?? []).some((drawer) => drawer.sectionId === sectionId));
+  const moveToMergedSection = <T extends { sectionId: string }>(items: T[] | undefined): T[] | undefined => items?.flatMap((item) => {
+    if (!subtree.descendantLeaves.has(item.sectionId)) return [item];
+    return item.sectionId === donorSectionId ? [{ ...item, sectionId: parentSectionId }] : [];
   });
   const nextLayoutBase: CabinetLayout = {
     partitions: nextPartitions,
     shelves: layout.shelves.map((shelf) => (
       subtree.descendantLeaves.has(shelf.sectionId)
-        ? { ...shelf, sectionId: subtree.target.parentSectionId }
+        ? { ...shelf, sectionId: parentSectionId }
         : shelf
     )),
-    drawers: [...nextDrawers.values()],
+    drawers: moveToMergedSection(layout.drawers),
+    tierDividers: moveToMergedSection(layout.tierDividers),
+    // Fronts of the merged sections would overlap in the wider section, so they go; others stay.
+    fronts: layout.fronts?.filter((front) => !subtree.descendantLeaves.has(front.sectionId)),
   };
 
   const nextLeafOrder = collectLeafOrder(nextLayoutBase);
@@ -681,12 +691,17 @@ function removePartitionInHorizontalLayout(layout: HorizontalCabinetLayout, part
   };
 }
 
-function setLeafSectionWidthsInHorizontalLayout(layout: HorizontalCabinetLayout, widths: number[], innerWidth: number): HorizontalCabinetLayout {
+function setLeafSectionWidthsInHorizontalLayout(layout: HorizontalCabinetLayout, widths: number[], innerWidth: number, pinnedIndex?: number, thickness = 0): HorizontalCabinetLayout {
   const leafOrder = collectLeafOrder(layout);
   if (leafOrder.length === 0 || widths.length !== leafOrder.length) return layout;
+  // Widths are clear openings, matching how buildResolvedStructure lays them out (partitions excluded).
+  const clearWidth = Math.max(1, innerWidth - layout.partitions.length * thickness);
+  const normalized = pinnedIndex !== undefined
+    ? normalizeSectionWidthsPinned(widths, clearWidth, pinnedIndex)
+    : normalizeSectionWidths(widths, clearWidth);
   return {
     ...layout,
-    sectionWidths: normalizeSectionWidths(widths, innerWidth),
+    sectionWidths: normalized,
   };
 }
 
@@ -784,18 +799,6 @@ export function addShelfToSection(layout: CabinetLayout, sectionId: string, tier
   return { layout: withTierSpecs(nextTiers), shelf: updatedTier.shelf };
 }
 
-export function addSectionTierDividerToSection(layout: CabinetLayout, sectionId: string, tierId?: string): { layout: CabinetLayout; divider: CabinetSectionTierDividerSpec } {
-  const tiers = getTierSpecs(layout);
-  const tierIndex = tierId ? tiers.findIndex((tier) => tier.id === tierId) : findTierIndexBySectionId(layout, sectionId);
-  if (tierIndex < 0) {
-    const updated = addSectionTierDividerToHorizontalSection(toHorizontalLayout(layout), sectionId);
-    return { layout: withTierSpecs([{ id: ROOT_TIER_ID, heightRatio: 1, layout: updated.layout }]), divider: updated.divider };
-  }
-  const updatedTier = addSectionTierDividerToHorizontalSection(tiers[tierIndex]!.layout, sectionId);
-  const nextTiers = tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: updatedTier.layout } : tier);
-  return { layout: withTierSpecs(nextTiers), divider: updatedTier.divider };
-}
-
 export function updateSectionTierDividerPosition(layout: CabinetLayout, dividerId: string, nextPositionRatio: number): CabinetLayout {
   const tierIndex = findTierIndexBySectionTierDividerId(layout, dividerId);
   if (tierIndex < 0) return layout;
@@ -806,27 +809,6 @@ export function updateSectionTierDividerPosition(layout: CabinetLayout, dividerI
   return withTierSpecs(nextTiers);
 }
 
-export function upsertDrawerStackInSection(
-  layout: CabinetLayout,
-  sectionId: string,
-  drawerCount: number,
-  runnerType: DrawerRunnerType,
-  runnerLength: DrawerRunnerLength,
-  tierId?: string,
-  zoneId?: string,
-  runnerLengthMode: DrawerRunnerLengthMode = 'manual'
-): { layout: CabinetLayout; drawerStack: CabinetDrawerStackSpec | null } {
-  const tiers = getTierSpecs(layout);
-  const tierIndex = tierId ? tiers.findIndex((tier) => tier.id === tierId) : findTierIndexBySectionId(layout, sectionId);
-  if (tierIndex < 0) {
-    const updated = upsertDrawerStackInHorizontalSection(toHorizontalLayout(layout), sectionId, zoneId, drawerCount, runnerType, runnerLength, runnerLengthMode);
-    return { layout: withTierSpecs([{ id: ROOT_TIER_ID, heightRatio: 1, layout: updated.layout }]), drawerStack: updated.drawerStack };
-  }
-  const updatedTier = upsertDrawerStackInHorizontalSection(tiers[tierIndex]!.layout, sectionId, zoneId, drawerCount, runnerType, runnerLength, runnerLengthMode);
-  const nextTiers = tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: updatedTier.layout } : tier);
-  return { layout: withTierSpecs(nextTiers), drawerStack: updatedTier.drawerStack };
-}
-
 export function removeShelf(layout: CabinetLayout, shelfId: string): CabinetLayout {
   const tierIndex = findTierIndexByShelfId(layout, shelfId);
   if (tierIndex < 0) return layout;
@@ -835,11 +817,58 @@ export function removeShelf(layout: CabinetLayout, shelfId: string): CabinetLayo
   return withTierSpecs(nextTiers);
 }
 
+export function setShelfElevations(layout: CabinetLayout, elevations: Map<string, number>): CabinetLayout {
+  if (elevations.size === 0) return layout;
+  const tiers = getTierSpecs(layout);
+  const nextTiers = tiers.map((tier) => ({
+    ...tier,
+    layout: {
+      ...tier.layout,
+      shelves: tier.layout.shelves.map((shelf) => elevations.has(shelf.id) ? { ...shelf, elevation: elevations.get(shelf.id) } : shelf),
+    },
+  }));
+  return withTierSpecs(nextTiers);
+}
+
+export function setShelfApron(layout: CabinetLayout, shelfId: string, withApron: boolean): CabinetLayout {
+  const tiers = getTierSpecs(layout);
+  const nextTiers = tiers.map((tier) => ({
+    ...tier,
+    layout: {
+      ...tier.layout,
+      shelves: tier.layout.shelves.map((shelf) => shelf.id === shelfId ? { ...shelf, withApron } : shelf),
+    },
+  }));
+  return withTierSpecs(nextTiers);
+}
+
+export function updateAllFronts(layout: CabinetLayout, update: (fronts: CabinetFrontSpec[], tierId: string) => CabinetFrontSpec[]): CabinetLayout {
+  return withTierSpecs(getTierSpecs(layout).map((tier) => ({ ...tier, layout: { ...tier.layout, fronts: update(tier.layout.fronts ?? [], tier.id) } })));
+}
+
+export function updateTierFronts(layout: CabinetLayout, tierId: string, update: (fronts: CabinetFrontSpec[]) => CabinetFrontSpec[]): CabinetLayout {
+  return updateAllFronts(layout, (fronts, id) => (id === tierId ? update(fronts) : fronts));
+}
+
 export function removeDrawerStack(layout: CabinetLayout, drawerId: string): CabinetLayout {
   const tierIndex = findTierIndexByDrawerId(layout, drawerId);
   if (tierIndex < 0) return layout;
   const tiers = getTierSpecs(layout);
-  const nextTiers = tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: { ...tier.layout, drawers: tier.layout.drawers?.filter((drawer) => drawer.id !== drawerId) } } : tier);
+  const nextTiers = tiers.map((tier, index) => {
+    if (index !== tierIndex) return tier;
+    const target = tier.layout.drawers?.find((drawer) => drawer.id === drawerId);
+    return {
+      ...tier,
+      layout: {
+        ...tier.layout,
+        drawers: tier.layout.drawers?.filter((drawer) => drawer.id !== drawerId),
+        // A drawer block takes its dividers with it.
+        tierDividers: target?.block
+          ? tier.layout.tierDividers?.filter((divider) => divider.id !== target.block!.dividerId && divider.id !== target.block!.baseDividerId)
+          : tier.layout.tierDividers,
+      },
+    };
+  });
   return withTierSpecs(nextTiers);
 }
 
@@ -847,7 +876,103 @@ export function removeSectionTierDivider(layout: CabinetLayout, dividerId: strin
   const tierIndex = findTierIndexBySectionTierDividerId(layout, dividerId);
   if (tierIndex < 0) return layout;
   const tiers = getTierSpecs(layout);
-  const nextTiers = tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: removeSectionTierDividerInHorizontalLayout(tier.layout, dividerId) } : tier);
+  const nextTiers = tiers.map((tier, index) => {
+    if (index !== tierIndex) return tier;
+    const removed = removeSectionTierDividerInHorizontalLayout(tier.layout, dividerId);
+    // Removing a drawer block's inner divider removes the block; removing its base divider only drops the niche.
+    const drawers = removed.drawers
+      ?.filter((drawer) => drawer.block?.dividerId !== dividerId)
+      .map((drawer) => drawer.block?.baseDividerId === dividerId
+        ? { ...drawer, block: { ...drawer.block, baseDividerId: undefined, offset: 0 } }
+        : drawer);
+    return { ...tier, layout: { ...removed, drawers } };
+  });
+  return withTierSpecs(nextTiers);
+}
+
+/** Adds or updates the drawer block at one end of a section; null when its dividers would exceed the section limit. */
+export function upsertDrawerBlockInSection(
+  layout: CabinetLayout,
+  sectionId: string,
+  tierId: string | undefined,
+  input: DrawerBlockInput
+): { layout: CabinetLayout; drawerStack: CabinetDrawerStackSpec | null } {
+  const tiers = getTierSpecs(layout);
+  const tierIndex = tierId ? tiers.findIndex((tier) => tier.id === tierId) : findTierIndexBySectionId(layout, sectionId);
+  if (tierIndex < 0) return { layout, drawerStack: null };
+  const tierLayout = tiers[tierIndex]!.layout;
+  const existing = tierLayout.drawers?.find((drawer) => drawer.sectionId === sectionId && drawer.block?.anchor === input.anchor);
+  const sectionDividerIds = new Set((tierLayout.tierDividers ?? []).filter((divider) => divider.sectionId === sectionId).map((divider) => divider.id));
+  const keep = (id?: string) => (id && sectionDividerIds.has(id) ? id : undefined);
+  const offset = Math.max(0, Math.round(input.offset));
+  const dividerId = keep(existing?.block?.dividerId) ?? createId('section-tier-divider');
+  const baseDividerId = offset > 0 ? keep(existing?.block?.baseDividerId) ?? createId('section-tier-divider') : undefined;
+  const staleBaseDividerId = offset > 0 ? undefined : keep(existing?.block?.baseDividerId);
+  const otherDividerCount = [...sectionDividerIds].filter((id) => id !== dividerId && id !== baseDividerId && id !== staleBaseDividerId).length;
+  if (otherDividerCount + (baseDividerId ? 2 : 1) > MAX_SECTION_TIER_DIVIDERS) return { layout, drawerStack: null };
+  // Ratios only order the dividers; the builder places a block's dividers from its offset and height.
+  const ensureDivider = (list: CabinetSectionTierDividerSpec[], id: string, positionRatio: number) => (
+    list.some((divider) => divider.id === id) ? list : [...list, { id, sectionId, positionRatio }]
+  );
+  let tierDividers = (tierLayout.tierDividers ?? []).filter((divider) => divider.id !== staleBaseDividerId);
+  tierDividers = ensureDivider(tierDividers, dividerId, input.anchor === 'bottom' ? 0.01 : 0.99);
+  if (baseDividerId) tierDividers = ensureDivider(tierDividers, baseDividerId, input.anchor === 'bottom' ? 0 : 1);
+  const drawerStack: CabinetDrawerStackSpec = {
+    ...(existing ?? { id: createId('drawer-stack'), sectionId }),
+    zoneId: undefined,
+    drawerCount: Math.max(1, Math.round(input.drawerCount)),
+    runnerType: input.runnerType,
+    runnerLength: input.runnerLength,
+    runnerLengthMode: input.runnerLengthMode,
+    block: {
+      anchor: input.anchor,
+      dividerId,
+      baseDividerId,
+      offset,
+      slotHeight: Math.max(MIN_DRAWER_SLOT_HEIGHT, Math.round(input.slotHeight)),
+      columns: Math.max(1, Math.min(MAX_DRAWER_BLOCK_COLUMNS, Math.round(input.columns))),
+      withBackPanel: input.withBackPanel,
+      fill: Boolean(input.fill),
+    },
+  };
+  const nextTierLayout: HorizontalCabinetLayout = {
+    ...tierLayout,
+    tierDividers,
+    drawers: [
+      ...(tierLayout.drawers ?? []).filter((drawer) => drawer.id !== drawerStack.id),
+      drawerStack,
+    ],
+  };
+  return { layout: withTierSpecs(tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: nextTierLayout } : tier)), drawerStack };
+}
+
+export function updateDrawerBlock(layout: CabinetLayout, drawerId: string, patch: Partial<Pick<CabinetDrawerBlockSpec, 'columns' | 'slotHeight' | 'withBackPanel' | 'offset' | 'fill'>>): CabinetLayout {
+  const tierIndex = findTierIndexByDrawerId(layout, drawerId);
+  if (tierIndex < 0) return layout;
+  const tiers = getTierSpecs(layout);
+  const nextTiers = tiers.map((tier, index) => index === tierIndex
+    ? {
+        ...tier,
+        layout: {
+          ...tier.layout,
+          drawers: tier.layout.drawers?.map((drawer) => drawer.id === drawerId && drawer.block
+            ? {
+                ...drawer,
+                block: {
+                  ...drawer.block,
+                  ...patch,
+                  columns: Math.max(1, Math.min(MAX_DRAWER_BLOCK_COLUMNS, Math.round(patch.columns ?? drawer.block.columns))),
+                  slotHeight: Math.max(MIN_DRAWER_SLOT_HEIGHT, Math.round(patch.slotHeight ?? drawer.block.slotHeight)),
+                  // A niche that has its own divider can't collapse to nothing.
+                  offset: patch.offset !== undefined
+                    ? Math.max(drawer.block.baseDividerId ? 20 : 0, Math.round(patch.offset))
+                    : drawer.block.offset,
+                },
+              }
+            : drawer),
+        },
+      }
+    : tier);
   return withTierSpecs(nextTiers);
 }
 
@@ -875,10 +1000,10 @@ export function removePartition(layout: CabinetLayout, partitionId: string): Cab
   return withTierSpecs(nextTiers);
 }
 
-export function setLeafSectionWidths(layout: CabinetLayout, widths: number[], innerWidth: number, sectionId?: string, tierId?: string): CabinetLayout {
+export function setLeafSectionWidths(layout: CabinetLayout, widths: number[], innerWidth: number, sectionId?: string, tierId?: string, pinnedIndex?: number, thickness = 0): CabinetLayout {
   const tiers = getTierSpecs(layout);
   const tierIndex = tierId ? tiers.findIndex((tier) => tier.id === tierId) : sectionId ? findTierIndexBySectionId(layout, sectionId) : 0;
   if (tierIndex < 0) return layout;
-  const nextTiers = tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: setLeafSectionWidthsInHorizontalLayout(tier.layout, widths, innerWidth) } : tier);
+  const nextTiers = tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: setLeafSectionWidthsInHorizontalLayout(tier.layout, widths, innerWidth, pinnedIndex, thickness) } : tier);
   return withTierSpecs(nextTiers);
 }

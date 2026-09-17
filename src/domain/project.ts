@@ -1,14 +1,18 @@
 import { createId } from '../shared/ids';
 import type { Part, PartFace } from './part';
-import type { DrillOperation } from './drill';
+import { isDrillOperation, type DrillOperation } from './drill';
 import { clampPointToFace } from './geometry';
+import { getFacePointWorld, projectWorldPointToFace, type WorldPoint } from './face-coords';
 import { validateDrillOperation } from './validation';
+import type { ProjectSketch } from './sketch';
 
 export type Project = {
   id: string;
   name: string;
   units: 'mm';
   parts: Part[];
+  /** Reference drawings shown in the sketch window. */
+  sketches?: ProjectSketch[];
 };
 
 export function createProject(name = 'Furniture MVP'): Project {
@@ -58,76 +62,36 @@ export function removePartWithDependentOperations(project: Project, partId: stri
   };
 }
 
+/**
+ * Removes every part of a cabinet group plus operations on other parts that reference them.
+ * Matches by part id only: `meta.sourceId` values are layout-local and repeat across groups.
+ */
+export function removeGroupWithDependentOperations(project: Project, groupId: string): Project {
+  const removedIds = new Set(project.parts.filter((part) => part.meta?.groupId === groupId).map((part) => part.id));
+  if (removedIds.size === 0) return project;
+
+  const dependencyTokens = [...removedIds];
+  return {
+    ...project,
+    parts: project.parts
+      .filter((part) => !removedIds.has(part.id))
+      .map((part) => ({
+        ...part,
+        operations: part.operations.filter((op) =>
+          !dependencyTokens.some((token) => typeof op.source === 'string' && op.source.includes(token))
+        ),
+      })),
+  };
+}
+
 export function getDrillGroupToken(partId: string, op: DrillOperation) {
   return op.source && op.source !== 'manual'
     ? `source:${op.source}`
     : `manual:${partId}:${op.id}`;
 }
 
-type WorldPoint = { x: number; y: number; z: number };
-
 function getOperationWorldPoint(part: Part, op: DrillOperation): WorldPoint {
-  switch (op.face) {
-    case 'front':
-      return {
-        x: part.position.x - part.width / 2 + op.x,
-        y: part.position.y + part.height / 2 - op.y,
-        z: part.position.z + part.thickness / 2,
-      };
-    case 'back':
-      return {
-        x: part.position.x - part.width / 2 + op.x,
-        y: part.position.y + part.height / 2 - op.y,
-        z: part.position.z - part.thickness / 2,
-      };
-    case 'top':
-      return {
-        x: part.position.x - part.width / 2 + op.x,
-        y: part.position.y + part.height / 2,
-        z: part.position.z + part.thickness / 2 - op.y,
-      };
-    case 'bottom':
-      return {
-        x: part.position.x - part.width / 2 + op.x,
-        y: part.position.y - part.height / 2,
-        z: part.position.z + part.thickness / 2 - op.y,
-      };
-    case 'left':
-      return {
-        x: part.position.x - part.width / 2,
-        y: part.position.y + part.height / 2 - op.y,
-        z: part.position.z + part.thickness / 2 - op.x,
-      };
-    case 'right':
-      return {
-        x: part.position.x + part.width / 2,
-        y: part.position.y + part.height / 2 - op.y,
-        z: part.position.z + part.thickness / 2 - op.x,
-      };
-  }
-}
-
-function projectWorldPointToFace(part: Part, face: PartFace, point: WorldPoint) {
-  switch (face) {
-    case 'front':
-    case 'back':
-      return {
-        x: Math.max(0, Math.min(part.width, point.x - (part.position.x - part.width / 2))),
-        y: Math.max(0, Math.min(part.height, part.position.y + part.height / 2 - point.y)),
-      };
-    case 'top':
-    case 'bottom':
-      return {
-        x: Math.max(0, Math.min(part.width, point.x - (part.position.x - part.width / 2))),
-        y: Math.max(0, Math.min(part.thickness, part.position.z + part.thickness / 2 - point.z)),
-      };
-    case 'left':
-    case 'right':
-      return {
-        x: Math.max(0, Math.min(part.thickness, part.position.z + part.thickness / 2 - point.z)),
-        y: Math.max(0, Math.min(part.height, part.position.y + part.height / 2 - point.y)),
-      };
-  }
+  return getFacePointWorld(part, op.face, op);
 }
 
 type MoveDrillGroupResult =
@@ -136,7 +100,7 @@ type MoveDrillGroupResult =
 
 export function moveDrillGroup(project: Project, anchorPartId: string, opId: string, nextX: number, nextY: number): MoveDrillGroupResult {
   const anchorPart = project.parts.find((part) => part.id === anchorPartId);
-  const anchorOp = anchorPart?.operations.find((op) => op.id === opId);
+  const anchorOp = anchorPart?.operations.filter(isDrillOperation).find((op) => op.id === opId);
   if (!anchorPart || !anchorOp) return { ok: false, errors: ['Selected hole was not found'] };
 
   const clamped = clampPointToFace(anchorPart, anchorOp.face, nextX, nextY);
@@ -155,7 +119,7 @@ export function moveDrillGroup(project: Project, anchorPartId: string, opId: str
     parts: project.parts.map((part) => ({
       ...part,
       operations: part.operations.map((op) => {
-        if (getDrillGroupToken(part.id, op) !== groupToken) return op;
+        if (!isDrillOperation(op) || getDrillGroupToken(part.id, op) !== groupToken) return op;
         const world = getOperationWorldPoint(part, op);
         const translated = {
           x: world.x + delta.x,
@@ -223,7 +187,7 @@ export function movePartsWithDependentOperations(project: Project, updatedParts:
       return {
         ...part,
         operations: part.operations.map((op) => {
-          if (!op.source || !sourceKeys.has(op.source)) return op;
+          if (!isDrillOperation(op) || !op.source || !sourceKeys.has(op.source)) return op;
           const world = getOperationWorldPoint(part, op);
           const translated = {
             x: world.x + delta.x,

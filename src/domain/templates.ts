@@ -29,7 +29,7 @@ export const HOLE_TEMPLATES: HoleTemplate[] = [
         [size.width - mx, size.height - my],
       ];
       return pts.map(([x, y]) =>
-        createDrillOperation({ face, axis: getFaceAxis(face), x, y, diameter: 5, depth: 12, through: false, templateName: 'Shelf pins x4' })
+        createDrillOperation({ face, axis: getFaceAxis(face), x, y, diameter: 5, depth: 12, through: false, templateName: 'Shelf pins x4', feature: 'shelf-pin' })
       );
     },
   },

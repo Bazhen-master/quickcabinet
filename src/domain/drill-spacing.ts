@@ -1,5 +1,6 @@
-import type { DrillOperation } from './drill';
+import { isDrillOperation, type DrillOperation, type MachiningOperation } from './drill';
 import type { Part, PartFace } from './part';
+import { getFacePointWorld } from './face-coords';
 
 const POSITION_EPSILON = 0.5;
 const WORLD_EPSILON = 1;
@@ -34,20 +35,7 @@ function isOppositeFace(a: PartFace, b: PartFace) {
 }
 
 function getWorldAnchorPosition(part: Part, face: PartFace, op: DrillOperation) {
-  switch (face) {
-    case 'front':
-      return { x: part.position.x - part.width / 2 + op.x, y: part.position.y + part.height / 2 - op.y, z: part.position.z + part.thickness / 2 };
-    case 'back':
-      return { x: part.position.x - part.width / 2 + op.x, y: part.position.y + part.height / 2 - op.y, z: part.position.z - part.thickness / 2 };
-    case 'top':
-      return { x: part.position.x - part.width / 2 + op.x, y: part.position.y + part.height / 2, z: part.position.z + part.thickness / 2 - op.y };
-    case 'bottom':
-      return { x: part.position.x - part.width / 2 + op.x, y: part.position.y - part.height / 2, z: part.position.z + part.thickness / 2 - op.y };
-    case 'left':
-      return { x: part.position.x - part.width / 2, y: part.position.y + part.height / 2 - op.y, z: part.position.z + part.thickness / 2 - op.x };
-    case 'right':
-      return { x: part.position.x + part.width / 2, y: part.position.y + part.height / 2 - op.y, z: part.position.z + part.thickness / 2 - op.x };
-  }
+  return getFacePointWorld(part, face, op);
 }
 
 function worldDistance(part: Part, a: DrillOperation, b: DrillOperation) {
@@ -56,9 +44,34 @@ function worldDistance(part: Part, a: DrillOperation, b: DrillOperation) {
   return Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z);
 }
 
+function getFaceNormalSize(part: Part, face: PartFace) {
+  if (face === 'left' || face === 'right') return part.width;
+  if (face === 'top' || face === 'bottom') return part.height;
+  return part.thickness;
+}
+
+/**
+ * Holes drilled from opposite faces collide when their circles overlap in the face plane and together they are at least
+ * as deep as the part. (The old world-distance check could never fire: the faces are a whole thickness apart.)
+ */
+function holesMeetThroughPart(part: Part, a: DrillOperation, b: DrillOperation) {
+  const pa = getWorldAnchorPosition(part, a.face, a);
+  const pb = getWorldAnchorPosition(part, b.face, b);
+  const planeDistance = a.face === 'left' || a.face === 'right'
+    ? Math.hypot(pa.y - pb.y, pa.z - pb.z)
+    : a.face === 'top' || a.face === 'bottom'
+      ? Math.hypot(pa.x - pb.x, pa.z - pb.z)
+      : Math.hypot(pa.x - pb.x, pa.y - pb.y);
+  if (planeDistance >= (a.diameter + b.diameter) / 2) return false;
+  const size = getFaceNormalSize(part, a.face);
+  const depthA = a.through ? size : a.depth;
+  const depthB = b.through ? size : b.depth;
+  return depthA + depthB >= size - WORLD_EPSILON;
+}
+
 export function getDrillConflictIds(part: Part) {
   const conflicts = new Set<string>();
-  const ops = part.operations ?? [];
+  const ops = (part.operations ?? []).filter(isDrillOperation);
 
   for (let i = 0; i < ops.length; i += 1) {
     const a = ops[i]!;
@@ -66,7 +79,9 @@ export function getDrillConflictIds(part: Part) {
       const b = ops[j]!;
       const sameSpotConflict = isSameSpot(a, b);
       const sameFaceSpacingConflict = isConflictOnSameFace(a, b);
-      const oppositeFaceConflict = isOppositeFace(a.face, b.face) && worldDistance(part, a, b) < WORLD_EPSILON;
+      // Shelf-pin rows on both sides of a partition are normal practice, so they are not flagged.
+      const oppositeFaceConflict = a.feature !== 'shelf-pin' && b.feature !== 'shelf-pin'
+        && isOppositeFace(a.face, b.face) && holesMeetThroughPart(part, a, b);
       if (!sameSpotConflict && !sameFaceSpacingConflict && !oppositeFaceConflict) continue;
       conflicts.add(a.id);
       conflicts.add(b.id);
@@ -84,8 +99,10 @@ function keepInsteadOfConfirmat(a: DrillOperation, b: DrillOperation) {
 
 export function normalizePartDrillOperations(part: Part): Part {
   const accepted: DrillOperation[] = [];
+  // Пазы в разрешение конфликтов отверстий не участвуют и остаются как есть.
+  const other: MachiningOperation[] = (part.operations ?? []).filter((op) => !isDrillOperation(op));
 
-  (part.operations ?? []).forEach((operation) => {
+  (part.operations ?? []).filter(isDrillOperation).forEach((operation) => {
     let current: DrillOperation | null = operation;
 
     for (let idx = 0; idx < accepted.length && current; idx += 1) {
@@ -108,5 +125,5 @@ export function normalizePartDrillOperations(part: Part): Part {
     if (current) accepted.push(current);
   });
 
-  return { ...part, operations: accepted };
+  return { ...part, operations: [...accepted, ...other] };
 }

@@ -31,7 +31,38 @@ export type DrillOperation = {
   templateName?: string;
 };
 
-export type MachiningOperation = DrillOperation;
+/**
+ * Паз на грани: прямой рез фрезой от (x, y) до (x2, y2) в координатах грани (face-coords.ts),
+ * по центру ширины. Сейчас это паз под ХДФ задней стенки.
+ */
+export type GrooveOperation = {
+  id: string;
+  type: 'groove';
+  source?: string;
+  feature?: 'back-panel-groove';
+  face: PartFace;
+  x: number;
+  y: number;
+  x2: number;
+  y2: number;
+  width: number;
+  depth: number;
+  templateName?: string;
+};
+
+export type MachiningOperation = DrillOperation | GrooveOperation;
+
+export function isDrillOperation(op: MachiningOperation): op is DrillOperation {
+  return op.type === 'drill';
+}
+
+export function isGrooveOperation(op: MachiningOperation): op is GrooveOperation {
+  return op.type === 'groove';
+}
+
+export function createGrooveOperation(input: Omit<GrooveOperation, 'id' | 'type'> & { id?: string }): GrooveOperation {
+  return { ...input, id: input.id ?? createId('groove'), type: 'groove' };
+}
 
 export function createDrillOperation(
   input: Omit<DrillOperation, 'id' | 'type'> & { id?: string }

@@ -1,14 +1,19 @@
+﻿import type React from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { Edges, Html, Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore, useProject } from '../app/store';
-import { getCabinetModuleState, getLeafSectionInnerSpan, getLeafTierSections } from '../domain/cabinet-builder';
+import { getCabinetModuleState, getCabinetOpenings, getLeafTierSections, getLocalZonesForSection, getOpeningRange, toOpeningRef } from '../domain/cabinet-builder';
+import { getCabinetTierSpecs } from '../domain/cabinet-layout';
 import { buildSnapCandidates, collidesWithAny, getBounds, getProjectCenter, type PartBounds } from '../domain/geometry';
-import type { Part, PartFace } from '../domain/part';
+import { getPartOutlineXY, type Part, type PartFace } from '../domain/part';
 import { getDrillGroupToken } from '../domain/project';
 import { getDrillConflictIds } from '../domain/drill-spacing';
+import { getFaceAxis, isDrillOperation, isGrooveOperation, type DrillOperation } from '../domain/drill';
+import { getFacePointWorld } from '../domain/face-coords';
 import { t } from '../i18n';
+import { getLocalizedPartName } from '../domain/part-label';
 
 function getFaceFrame(part: Part, face: PartFace) {
   switch (face) {
@@ -136,57 +141,166 @@ function getMarkerColor(feature: Part['operations'][number]['feature'], isSelect
   return { color: isSelected ? '#ef4444' : '#2563eb', emissive: isSelected ? '#7f1d1d' : '#1d4ed8' };
 }
 
-function getMarkerVisualLength(op: Part['operations'][number], isSelected: boolean, holeLength: number) {
+function getMarkerVisualLength(op: DrillOperation, isSelected: boolean, holeLength: number) {
   if (op.through) return Math.max(holeLength, 4);
   if (op.feature === 'cam-housing') return Math.min(Math.max(op.depth, 4), 12);
   if (op.feature === 'hinge-cup') return Math.min(Math.max(op.depth, 8), 13);
   return Math.max(holeLength, isSelected ? 2.4 : 1.2);
 }
 
-function DrillMarkers({ part }: { part: Part }) {
-  const project = useProject();
-  const selected = useAppStore((s) => s.selected);
-  const selectedPartIds = useAppStore((s) => s.selectedPartIds);
-  const selectedDrill = useAppStore((s) => s.selectedDrill);
-  const selectDrillOperation = useAppStore((s) => s.selectDrillOperation);
+/** Unit cylinder along +Y: every marker is this shape scaled to its radius and length. */
+const DRILL_MARKER_GEOMETRY = new THREE.CylinderGeometry(1, 1, 1, 12);
+const conflictIdsByPart = new WeakMap<Part, Set<string>>();
+
+function getCachedConflictIds(part: Part) {
+  let ids = conflictIdsByPart.get(part);
+  if (!ids) {
+    ids = new Set(getDrillConflictIds(part));
+    conflictIdsByPart.set(part, ids);
+  }
+  return ids;
+}
+
+type DrillMarkerInstance = {
+  partId: string;
+  opId: string;
+  feature: DrillOperation['feature'];
+  drillSelected: boolean;
+  matrix: THREE.Matrix4;
+  color: THREE.Color;
+  surface: THREE.Vector3;
+  tip: THREE.Vector3;
+};
+
+/**
+ * All hole markers of the scene in one InstancedMesh — one draw call instead of one per hole (a kitchen has
+ * thousands). A click resolves the hole through instanceId.
+ */
+function DrillMarkerInstances({ parts }: { parts: Part[] }) {
   const showDrilling = useAppStore((s) => s.showDrilling);
-  const isSelected = selectedPartIds.includes(part.id) || ((selected?.type === 'part' || selected?.type === 'face') && selected.partId === part.id);
-  const conflictIds = useMemo(() => new Set(getDrillConflictIds(part)), [part]);
-  const selectedDrillToken = useMemo(() => {
-    if (!selectedDrill) return null;
-    const selectedPart = project.parts.find((item) => item.id === selectedDrill.partId);
-    const selectedOp = selectedPart?.operations.find((op) => op.id === selectedDrill.opId);
-    return selectedPart && selectedOp ? getDrillGroupToken(selectedDrill.partId, selectedOp) : null;
-  }, [project.parts, selectedDrill]);
-  if (!showDrilling) return null;
-  return <>{part.operations.map((op) => {
-    const isDrillSelected = !!selectedDrillToken && getDrillGroupToken(part.id, op) === selectedDrillToken;
-    const isConflict = conflictIds.has(op.id);
-    const surfacePosition = getMarkerSurfacePosition(part, op.face, op.x, op.y);
-    const axis = getAxisVector(op.axis);
-    const holeLength = getHoleLength(part, op.axis, op.depth, op.through);
-    const visualLength = getMarkerVisualLength(op, isSelected || isDrillSelected, holeLength);
-    const position = surfacePosition.clone().add(axis.clone().multiplyScalar(visualLength / 2));
-    const linePoints = [
-      surfacePosition.clone(),
-      surfacePosition.clone().add(axis.clone().multiplyScalar(visualLength)),
-    ];
-    return (
-      <group key={op.id}>
-        <mesh position={position} rotation={getMarkerRotation(op.axis)} onClick={(e) => { e.stopPropagation(); selectDrillOperation(part.id, op.id); }}>
-          <cylinderGeometry args={[Math.max(op.diameter / 2, isSelected || isDrillSelected ? 2.6 : 1.6), Math.max(op.diameter / 2, isSelected || isDrillSelected ? 2.6 : 1.6), visualLength, 24]} />
-          <meshStandardMaterial {...getMarkerColor(op.feature, isSelected || isDrillSelected, op.through, isConflict)} emissiveIntensity={isSelected || isDrillSelected || isConflict ? 0.45 : 0.15} />
+  const selectDrillOperation = useAppStore((s) => s.selectDrillOperation);
+  // Primitive selector results: markers are rebuilt only when the relevant selection really changes.
+  const selectedPartKey = useAppStore((s) => {
+    const ids = new Set(s.selectedPartIds);
+    if (s.selected?.type === 'part' || s.selected?.type === 'face') ids.add(s.selected.partId);
+    return [...ids].sort().join('|');
+  });
+  const selectedDrillToken = useAppStore((s) => {
+    const drill = s.selectedDrill;
+    if (!drill) return null;
+    const op = s.history.present.parts.find((part) => part.id === drill.partId)?.operations.filter(isDrillOperation).find((item) => item.id === drill.opId);
+    return op ? getDrillGroupToken(drill.partId, op) : null;
+  });
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+
+  const instances = useMemo<DrillMarkerInstance[]>(() => {
+    if (!showDrilling) return [];
+    const selectedIds = new Set(selectedPartKey ? selectedPartKey.split('|') : []);
+    const up = new THREE.Vector3(0, 1, 0);
+    return parts.flatMap((part) => {
+      const conflicts = getCachedConflictIds(part);
+      const origin = new THREE.Vector3(part.position.x, part.position.y, part.position.z);
+      return part.operations.filter(isDrillOperation).map((op) => {
+        const drillSelected = !!selectedDrillToken && getDrillGroupToken(part.id, op) === selectedDrillToken;
+        const highlighted = selectedIds.has(part.id) || drillSelected;
+        const axis = getAxisVector(op.axis);
+        const visualLength = getMarkerVisualLength(op, highlighted, getHoleLength(part, op.axis, op.depth, op.through));
+        const radius = Math.max(op.diameter / 2, highlighted ? 2.6 : 1.6);
+        const surface = getMarkerSurfacePosition(part, op.face, op.x, op.y).add(origin);
+        const center = surface.clone().add(axis.clone().multiplyScalar(visualLength / 2));
+        return {
+          partId: part.id,
+          opId: op.id,
+          feature: op.feature,
+          drillSelected,
+          matrix: new THREE.Matrix4().compose(center, new THREE.Quaternion().setFromUnitVectors(up, axis), new THREE.Vector3(radius, visualLength, radius)),
+          color: new THREE.Color(getMarkerColor(op.feature, highlighted, op.through, conflicts.has(op.id)).color),
+          surface,
+          tip: surface.clone().add(axis.clone().multiplyScalar(visualLength)),
+        };
+      });
+    });
+  }, [parts, selectedDrillToken, selectedPartKey, showDrilling]);
+
+  useLayoutEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    instances.forEach((instance, index) => {
+      mesh.setMatrixAt(index, instance.matrix);
+      mesh.setColorAt(index, instance.color);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }, [instances]);
+
+  if (instances.length === 0) return null;
+  return (
+    <>
+      <instancedMesh
+        // The instance count is fixed when the mesh is created, so another count needs a fresh mesh.
+        key={instances.length}
+        ref={meshRef}
+        args={[DRILL_MARKER_GEOMETRY, undefined, instances.length]}
+        onClick={(e) => {
+          e.stopPropagation();
+          const instance = e.instanceId === undefined ? null : instances[e.instanceId];
+          if (instance) selectDrillOperation(instance.partId, instance.opId);
+        }}
+      >
+        <meshStandardMaterial emissive="#1f1f1f" />
+      </instancedMesh>
+      {instances.filter((instance) => instance.drillSelected).map((instance) => (
+        <group key={`${instance.partId}:${instance.opId}`}>
+          {instance.feature === 'cam-housing' ? (
+            <mesh position={instance.surface}>
+              <sphereGeometry args={[1.4, 12, 12]} />
+              <meshBasicMaterial color="#111827" />
+            </mesh>
+          ) : null}
+          <Line points={[instance.surface, instance.tip]} color="#dc2626" lineWidth={1} />
+        </group>
+      ))}
+    </>
+  );
+}
+
+const GROOVE_MARKER_GEOMETRY = new THREE.BoxGeometry(1, 1, 1);
+
+/** Пазы — тёмные вырезы по грани: длина вдоль паза, ширина поперёк, глубина внутрь детали. Видны вместе с присадкой. */
+function GrooveMarkers({ parts }: { parts: Part[] }) {
+  const showDrilling = useAppStore((s) => s.showDrilling);
+  const grooves = useMemo(() => {
+    if (!showDrilling) return [];
+    return parts.flatMap((part) => part.operations.filter(isGrooveOperation).map((op) => {
+      const start = getFacePointWorld(part, op.face, op);
+      const end = getFacePointWorld(part, op.face, { x: op.x2, y: op.y2 });
+      const along = new THREE.Vector3(end.x - start.x, end.y - start.y, end.z - start.z);
+      const length = along.length();
+      along.normalize();
+      const inward = getAxisVector(getFaceAxis(op.face));
+      const across = new THREE.Vector3().crossVectors(along, inward);
+      // Чуть глубже и длиннее реального, чтобы вырез не мерцал на одной плоскости с гранью.
+      const center = new THREE.Vector3(start.x + end.x, start.y + end.y, start.z + end.z)
+        .multiplyScalar(0.5)
+        .add(inward.clone().multiplyScalar(op.depth / 2 - 0.25));
+      const matrix = new THREE.Matrix4()
+        .makeBasis(along, inward, across)
+        .scale(new THREE.Vector3(length + 0.5, op.depth + 0.5, op.width))
+        .setPosition(center);
+      return { key: `${part.id}:${op.id}`, matrix };
+    }));
+  }, [parts, showDrilling]);
+
+  return (
+    <>
+      {grooves.map((groove) => (
+        <mesh key={groove.key} geometry={GROOVE_MARKER_GEOMETRY} matrixAutoUpdate={false} matrix={groove.matrix} raycast={() => null}>
+          <meshStandardMaterial color="#3f3f46" />
         </mesh>
-        {isDrillSelected && op.feature === 'cam-housing' ? (
-          <mesh position={surfacePosition}>
-            <sphereGeometry args={[1.4, 12, 12]} />
-            <meshBasicMaterial color="#111827" />
-          </mesh>
-        ) : null}
-        {isDrillSelected ? <Line points={linePoints} color="#dc2626" lineWidth={1} /> : null}
-      </group>
-    );
-  })}</>;
+      ))}
+    </>
+  );
 }
 
 function pointToFaceCoordinates(part: Part, face: PartFace, local: THREE.Vector3) {
@@ -202,13 +316,13 @@ function pointToFaceCoordinates(part: Part, face: PartFace, local: THREE.Vector3
 
 function FaceLayer({ part, face, position, rotation, size }: { part: Part; face: PartFace; position: [number, number, number]; rotation: [number, number, number]; size: [number, number]; }) {
   const activeTool = useAppStore((s) => s.activeTool);
-  const selected = useAppStore((s) => s.selected);
-  const measuredFaces = useAppStore((s) => s.measuredFaces);
   const selectFace = useAppStore((s) => s.selectFace);
   const addHoleToFace = useAppStore((s) => s.addHoleToFace);
-  const isActive = selected?.type === 'face' && selected.partId === part.id && selected.face === face;
-  const isMeasured = measuredFaces.some((item) => item?.partId === part.id && item.face === face);
-  const isVisible = activeTool === 'place-hole' || activeTool === 'measure' || isActive || isMeasured || (selected?.type === 'part' && selected.partId === part.id);
+  // Boolean selectors: a face layer re-renders only when its own state flips, not on every selection change.
+  const isActive = useAppStore((s) => s.selected?.type === 'face' && s.selected.partId === part.id && s.selected.face === face);
+  const isPartSelected = useAppStore((s) => s.selected?.type === 'part' && s.selected.partId === part.id);
+  const isMeasured = useAppStore((s) => s.measuredFaces.some((item) => item?.partId === part.id && item.face === face));
+  const isVisible = activeTool === 'place-hole' || activeTool === 'measure' || isActive || isMeasured || isPartSelected;
   if (!isVisible) return null;
   return <mesh position={position} rotation={rotation} onClick={(e) => { e.stopPropagation(); selectFace(part.id, face); if (activeTool !== 'place-hole') return; const local = e.point.clone().sub(new THREE.Vector3(part.position.x, part.position.y, part.position.z)); const coords = pointToFaceCoordinates(part, face, local); addHoleToFace(part.id, face, coords.x, coords.y); }}><planeGeometry args={size} /><meshBasicMaterial color={isActive || isMeasured ? '#f59e0b' : '#fbbf24'} transparent opacity={isActive || isMeasured ? 0.2 : 0.05} side={THREE.DoubleSide} depthWrite={false} /></mesh>;
 }
@@ -249,27 +363,89 @@ function MeasurementOverlay() {
   );
 }
 
-function PartMesh({ part }: { part: Part }) {
-  const selected = useAppStore((s) => s.selected);
-  const selectedPartIds = useAppStore((s) => s.selectedPartIds);
+const ROLE_COLORS: Record<string, string> = {
+  'left-side': '#818cf8', 'right-side': '#818cf8',
+  'top': '#f472b6', 'bottom': '#f472b6',
+  'shelf': '#34d399',
+  'partition': '#fbbf24',
+  'back-panel': '#a78bfa',
+  'front-left': '#f87171', 'front-right': '#f87171', 'front-flap': '#f87171',
+  'plinth-front': '#22d3ee', 'plinth-left': '#22d3ee', 'plinth-right': '#22d3ee', 'plinth-back': '#22d3ee',
+  'tier-divider': '#fb923c',
+  'apron': '#60a5fa',
+  'back-rail': '#60a5fa',
+};
+
+const HOVER_COLOR = '#3b82f6';
+
+/** Outline drawn on top of everything, so a part hovered in the project tree is visible even inside the cabinet. */
+function HoverOutline({ args }: { args: [number, number, number] }) {
+  const geometry = useMemo(() => {
+    const box = new THREE.BoxGeometry(...args);
+    const edges = new THREE.EdgesGeometry(box);
+    box.dispose();
+    return edges;
+  }, [args]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return (
+    <lineSegments geometry={geometry} renderOrder={40}>
+      <lineBasicMaterial color={HOVER_COLOR} depthTest={false} depthWrite={false} transparent opacity={0.3} toneMapped={false} />
+    </lineSegments>
+  );
+}
+
+/** Пластина с угловыми вырезами (ХДФ под навесы): контур в XY, выдавленный на толщину, по центру детали. */
+function NotchedPanelGeometry({ part }: { part: Part }) {
+  const geometry = useMemo(() => {
+    const outline = getPartOutlineXY(part);
+    const shape = new THREE.Shape(outline.map((point) => new THREE.Vector2(point.x - part.width / 2, point.y - part.height / 2)));
+    const extruded = new THREE.ExtrudeGeometry(shape, { depth: part.thickness, bevelEnabled: false });
+    extruded.translate(0, 0, -part.thickness / 2);
+    return extruded;
+  }, [part]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <primitive object={geometry} attach="geometry" />;
+}
+
+// Memoized: a project change keeps unchanged parts as the same objects, so only changed parts re-render.
+const PartMesh = memo(function PartMesh({ part }: { part: Part }) {
   const selectPart = useAppStore((s) => s.selectPart);
+  const language = useAppStore((s) => s.language);
   const xrayMode = useAppStore((s) => s.xrayMode);
   const themeMode = useAppStore((s) => s.themeMode);
+  const showRoleColors = useAppStore((s) => s.showRoleColors);
+  const materialColor = useAppStore((s) => s.materialColor);
+  // Boolean selector: only parts whose hover state flips re-render.
+  const isHovered = useAppStore((s) => s.hoveredPartIds.includes(part.id));
   const isDarkBlue = themeMode === 'dark-blue';
-  const isSelected = selectedPartIds.includes(part.id) || ((selected?.type === 'part' || selected?.type === 'face') && selected.partId === part.id);
-  const isGroupSelected = selected?.type === 'group' && selected.groupId === part.meta?.groupId;
-  const showSingleLabel = (selected?.type === 'part' || selected?.type === 'face') && selected.partId === part.id && selectedPartIds.length <= 1;
+  // Boolean selectors (like isHovered): selecting one part must not re-render every other part.
+  const isSelected = useAppStore((s) => s.selectedPartIds.includes(part.id) || ((s.selected?.type === 'part' || s.selected?.type === 'face') && s.selected.partId === part.id));
+  const isGroupSelected = useAppStore((s) => s.selected?.type === 'group' && s.selected.groupId === part.meta?.groupId);
+  const showSingleLabel = useAppStore((s) => (s.selected?.type === 'part' || s.selected?.type === 'face') && s.selected.partId === part.id && s.selectedPartIds.length <= 1);
   const boxArgs = useMemo<[number, number, number]>(() => [part.width, part.height, part.thickness], [part.width, part.height, part.thickness]);
-  const xrayOpacity = isSelected || isGroupSelected ? 0.48 : 0.22;
+  const xrayOpacity = isSelected || isGroupSelected || isHovered ? 0.48 : 0.22;
+  const roleColor = showRoleColors ? (ROLE_COLORS[part.meta?.role ?? ''] ?? '#94a3b8') : null;
+  const meshColor = isSelected || isGroupSelected ? '#f5d0a9' : (roleColor ?? part.meta?.displayColor ?? materialColor ?? (isDarkBlue ? '#f1f5f9' : '#d6d3d1'));
   return (
-    <group position={[part.position.x, part.position.y, part.position.z]}>
+    <group
+      position={[part.position.x, part.position.y, part.position.z]}
+      // On the group, not the box: face layers and drill markers sit in front of the box and would swallow the hover.
+      onPointerOver={(e) => { e.stopPropagation(); useAppStore.getState().setHoveredPartIds([part.id], 'scene'); }}
+      onPointerOut={(e) => {
+        e.stopPropagation();
+        const { hoverSource, hoveredPartIds, setHoveredPartIds } = useAppStore.getState();
+        if (hoverSource === 'scene' && hoveredPartIds.length === 1 && hoveredPartIds[0] === part.id) setHoveredPartIds([], 'scene');
+      }}
+    >
       <mesh
         renderOrder={xrayMode ? 10 : 1}
         onClick={(e) => { e.stopPropagation(); selectPart(part.id, !!(e.nativeEvent as MouseEvent).ctrlKey || !!(e.nativeEvent as MouseEvent).metaKey); }}
       >
-        <boxGeometry args={boxArgs} />
+        {part.cornerNotches?.length ? <NotchedPanelGeometry part={part} /> : <boxGeometry args={boxArgs} />}
         <meshStandardMaterial
-          color={isSelected || isGroupSelected ? '#f5d0a9' : (isDarkBlue ? '#f1f5f9' : '#d6d3d1')}
+          color={meshColor}
+          emissive={isHovered ? HOVER_COLOR : '#000000'}
+          emissiveIntensity={isHovered ? 0.105 : 0}
           transparent={xrayMode}
           opacity={xrayMode ? xrayOpacity : 1}
           side={xrayMode ? THREE.DoubleSide : THREE.FrontSide}
@@ -279,19 +455,26 @@ function PartMesh({ part }: { part: Part }) {
           polygonOffsetFactor={xrayMode ? 2 : 1}
           polygonOffsetUnits={xrayMode ? 2 : 1}
         />
-        <Edges renderOrder={xrayMode ? 20 : 2} color={isDarkBlue ? '#8b8b92' : '#444'} />
+        <Edges renderOrder={xrayMode ? 20 : 2} color={isHovered ? HOVER_COLOR : (isDarkBlue ? '#8b8b92' : '#444')} />
       </mesh>
+      {isHovered ? <HoverOutline args={boxArgs} /> : null}
       <FaceLayer part={part} face="front" position={[0, 0, part.thickness / 2 + 0.6]} rotation={[0, 0, 0]} size={[part.width, part.height]} />
       <FaceLayer part={part} face="back" position={[0, 0, -part.thickness / 2 - 0.6]} rotation={[0, Math.PI, 0]} size={[part.width, part.height]} />
       <FaceLayer part={part} face="top" position={[0, part.height / 2 + 0.6, 0]} rotation={[-Math.PI / 2, 0, 0]} size={[part.width, part.thickness]} />
       <FaceLayer part={part} face="bottom" position={[0, -part.height / 2 - 0.6, 0]} rotation={[Math.PI / 2, 0, 0]} size={[part.width, part.thickness]} />
       <FaceLayer part={part} face="left" position={[-part.width / 2 - 0.6, 0, 0]} rotation={[0, Math.PI / 2, 0]} size={[part.thickness, part.height]} />
       <FaceLayer part={part} face="right" position={[part.width / 2 + 0.6, 0, 0]} rotation={[0, -Math.PI / 2, 0]} size={[part.thickness, part.height]} />
-      <DrillMarkers part={part} />
-      {showSingleLabel && <Html position={[0, part.height / 2 + 22, 0]} center><div style={{ fontSize: 12, background: isDarkBlue ? 'rgba(36,36,39,0.94)' : 'rgba(255,255,255,0.92)', color: isDarkBlue ? '#f4f4f5' : '#111', padding: '2px 6px', borderRadius: 6, border: `1px solid ${isDarkBlue ? '#52525b' : '#ddd'}`, whiteSpace: 'nowrap' }}>{part.name}</div></Html>}
+      {showSingleLabel && (
+        <Html position={[0, part.height / 2 + 22, 0]} center>
+          <div style={{ fontSize: 12, background: isDarkBlue ? 'rgba(36,36,39,0.94)' : 'rgba(255,255,255,0.92)', color: isDarkBlue ? '#f4f4f5' : '#111', padding: '3px 7px 4px', borderRadius: 6, border: `1px solid ${isDarkBlue ? '#52525b' : '#ddd'}`, whiteSpace: 'nowrap', lineHeight: 1.4 }}>
+            <div style={{ fontWeight: 600 }}>{getLocalizedPartName(part, language)}</div>
+            <div style={{ fontSize: 10, color: isDarkBlue ? '#a1a1aa' : '#78716c' }}>{part.width}×{part.height}×{part.thickness} мм</div>
+          </div>
+        </Html>
+      )}
     </group>
   );
-}
+});
 
 type SceneSnapCandidate = {
   key: string;
@@ -362,43 +545,117 @@ function SectionOverlay() {
   const project = useProject();
   const selected = useAppStore((s) => s.selected);
   const selectionMode = useAppStore((s) => s.selectionMode);
+  const placingFronts = useAppStore((s) => s.activeTool === 'place-front');
+  // The front tool shows the openings of every cabinet; otherwise only the selected cabinet's, in group selection mode.
+  const groupIds = useMemo(() => {
+    if (placingFronts) return [...new Set(project.parts.map((part) => part.meta?.groupId).filter((id): id is string => Boolean(id)))];
+    if (selectionMode !== 'group' || !selected) return [];
+    const groupId = selected.type === 'group' ? selected.groupId : project.parts.find((part) => part.id === selected.partId)?.meta?.groupId;
+    return groupId ? [groupId] : [];
+  }, [placingFronts, project.parts, selected, selectionMode]);
+  return <>{groupIds.map((groupId) => <CabinetOpeningsOverlay key={groupId} groupId={groupId} placingFronts={placingFronts} />)}</>;
+}
+
+function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; placingFronts: boolean }) {
+  const project = useProject();
   const selectedSection = useAppStore((s) => s.selectedSection);
-  const setSelectedSection = useAppStore((s) => s.setSelectedSection);
-  const [hoveredSectionId, setHoveredSectionId] = useState<string | null>(null);
+  const selectedOpening = useAppStore((s) => s.selectedOpening);
+  const selectOpening = useAppStore((s) => s.selectOpening);
+  const language = useAppStore((s) => s.language);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
 
-  const moduleState = useMemo(() => {
-    if (!selected) return null;
-    if (selected.type === 'group') return getCabinetModuleState(project.parts, selected.groupId);
-    const groupId = project.parts.find((part) => part.id === selected.partId)?.meta?.groupId;
-    return groupId ? getCabinetModuleState(project.parts, groupId) : null;
-  }, [project.parts, selected]);
+  const moduleState = getCabinetModuleState(project.parts, groupId);
 
-  const sections = useMemo(() => moduleState ? getLeafTierSections(moduleState) : [], [moduleState]);
-  if (!moduleState || sections.length === 0 || selectionMode !== 'group') return null;
+  // One overlay per free cell (between shelves and dividers) and one per front: the cells under a stretched front merge
+  // into its opening. A click picks that opening, plus the section/zone of its bottom cell for the rest of the panel.
+  const openings = useMemo(() => moduleState ? getCabinetOpenings(project.parts, moduleState.groupId) : [], [moduleState, project.parts]);
+  const overlays = useMemo(() => {
+    if (!moduleState) return [];
+    const sections = getLeafTierSections(moduleState);
+    const frontCells = getCabinetTierSpecs(moduleState.layout)
+      .flatMap((tier) => (tier.layout.fronts ?? []).map((spec) => getOpeningRange(openings, { ...spec, tierId: tier.id })))
+      .flatMap((range) => (range ? [range.cells.slice(range.from, range.to + 1)] : []));
+    const covered = new Set(frontCells.flat());
+    const groups = [
+      ...frontCells.map((cells) => ({ cells, isFront: true })),
+      ...openings.filter((cell) => !covered.has(cell)).map((cell) => ({ cells: [cell], isFront: false })),
+    ];
+    return groups.map(({ cells, isFront }) => {
+      const bottom = cells[0]!;
+      const top = cells[cells.length - 1]!;
+      const sectionIndex = sections.filter((section) => section.tierId === bottom.tierId).findIndex((section) => section.id === bottom.sectionId);
+      const zones = getLocalZonesForSection(moduleState, bottom.sectionId, bottom.tierId);
+      const centerY = (bottom.startY + bottom.endY) / 2;
+      const zoneId = zones.length > 1 ? zones.find((zone) => centerY >= zone.startY && centerY <= zone.endY)?.id ?? null : null;
+      return {
+        key: `${bottom.tierId}|${bottom.sectionId}|${bottom.bottomBoundaryId}|${top.topBoundaryId}`,
+        cells,
+        bottom,
+        top,
+        ref: toOpeningRef(bottom, top),
+        isFront,
+        hasDrawers: cells.some((cell) => cell.hasDrawers),
+        sectionIndex,
+        zoneId,
+      };
+    });
+  }, [moduleState, openings]);
+  if (!moduleState || overlays.length === 0) return null;
 
-  const planeZ = moduleState.position.z + moduleState.depth / 2 + 6;
+  // In front of the fronts, so an opening that already has a front can still be picked.
+  const planeZ = moduleState.position.z + moduleState.depth / 2 + moduleState.thickness + 6;
+  const openingSelection = selectedOpening?.groupId === moduleState.groupId ? selectedOpening : null;
+  const mm = language === 'ru' ? 'мм' : 'mm';
+  // The picked opening is a column of cells, possibly across tiers.
+  const range = openingSelection ? getOpeningRange(openings, openingSelection) : null;
+  const pickedCells = range ? range.cells.slice(range.from, range.to + 1) : [];
 
   return (
     <>
-      {sections.map((section, idx) => {
-        const innerSpan = getLeafSectionInnerSpan(moduleState, section);
-        const isActive = selectedSection?.groupId === moduleState.groupId && selectedSection.sectionId === section.id && (!selectedSection.tierId || selectedSection.tierId === section.tierId);
-        const isHovered = hoveredSectionId === section.id;
-        const color = isActive ? '#f59e0b' : isHovered ? '#60a5fa' : '#94a3b8';
-        const opacity = isActive ? 0.22 : isHovered ? 0.16 : 0.08;
-        const overlayHeight = Math.max(section.clearHeight, 8);
-        const overlayCenterY = (section.startY + section.endY) / 2;
+      {overlays.map(({ key, cells, bottom, top, ref, isFront, hasDrawers, sectionIndex, zoneId }) => {
+        const inOpening = cells.some((cell) => pickedCells.includes(cell));
+        const sectionActive = !openingSelection
+          && selectedSection?.groupId === moduleState.groupId
+          && selectedSection.sectionId === bottom.sectionId
+          && (!selectedSection.tierId || selectedSection.tierId === bottom.tierId)
+          && (!selectedSection.zoneId || selectedSection.zoneId === zoneId);
+        const isHovered = hoveredKey === key;
+        const color = inOpening || sectionActive ? '#f59e0b' : isHovered ? '#60a5fa' : '#94a3b8';
+        // The front tool lights every opening up; drawer cells stay dim since no front goes there.
+        const idleOpacity = placingFronts ? (hasDrawers ? 0.04 : 0.12) : 0.06;
+        const opacity = inOpening ? 0.28 : isHovered ? 0.18 : sectionActive ? 0.12 : idleOpacity;
+        const width = Math.max(bottom.endX - bottom.startX, 8);
+        const height = Math.max(top.endY - bottom.startY, 8);
+        // One label per picked opening (on the overlay holding its top cell, with the whole size), or on the hovered one.
+        const showRangeLabel = Boolean(range && cells.includes(range.cells[range.to]!));
+        const labelHeight = range && showRangeLabel ? range.cells[range.to]!.endY - range.cells[range.from]!.startY : height;
+        const kind = hasDrawers
+          ? (language === 'ru' ? 'ящики' : 'drawers')
+          : isFront
+            ? (language === 'ru' ? 'фасад' : 'front')
+            : t(language, 'opening').toLowerCase();
+        const tierLabel = top.tierIndex === bottom.tierIndex ? `${bottom.tierIndex + 1}` : `${top.tierIndex + 1}–${bottom.tierIndex + 1}`;
+        const label = `${t(language, 'tier')} ${tierLabel} · ${t(language, 'section')} ${sectionIndex + 1} · ${kind} ${Math.round(labelHeight)} × ${Math.round(width)} ${mm}`;
         return (
-          <group key={section.id} position={[moduleState.position.x + innerSpan.centerX, overlayCenterY, planeZ]}>
+          <group key={key} position={[(bottom.startX + bottom.endX) / 2, (bottom.startY + top.endY) / 2, planeZ]}>
             <mesh
-              onPointerOver={(e) => { e.stopPropagation(); setHoveredSectionId(section.id); }}
-              onPointerOut={(e) => { e.stopPropagation(); setHoveredSectionId((current) => current === section.id ? null : current); }}
-              onClick={(e) => { e.stopPropagation(); setSelectedSection(moduleState.groupId, section.id, section.tierId); }}
+              onPointerOver={(e) => { e.stopPropagation(); setHoveredKey(key); }}
+              onPointerOut={(e) => { e.stopPropagation(); setHoveredKey((current) => current === key ? null : current); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                selectOpening(
+                  moduleState.groupId,
+                  { sectionId: bottom.sectionId, tierId: bottom.tierId, zoneId },
+                  hasDrawers ? null : ref,
+                  e.nativeEvent.shiftKey
+                );
+              }}
             >
-              <planeGeometry args={[Math.max(innerSpan.width, 8), overlayHeight]} />
+              <planeGeometry args={[width, height]} />
               <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthWrite={false} />
+              {placingFronts || inOpening ? <Edges color={color} /> : null}
             </mesh>
-            {(isActive || isHovered) ? <Html position={[0, overlayHeight / 2 + 18, 0]} center><div style={{ fontSize: 12, background: 'rgba(255,255,255,0.96)', padding: '2px 6px', borderRadius: 6, border: `1px solid ${color}`, whiteSpace: 'nowrap' }}>{`Tier ${section.tierIndex + 1} • Section ${idx + 1}`}</div></Html> : null}
+            {(showRangeLabel || isHovered) ? <Html position={[0, height / 2 + 18, 0]} center><div style={{ fontSize: 12, color: '#111', background: 'rgba(255,255,255,0.96)', padding: '2px 6px', borderRadius: 6, border: `1px solid ${color}`, whiteSpace: 'nowrap' }}>{label}</div></Html> : null}
           </group>
         );
       })}
@@ -426,6 +683,8 @@ function CameraRig() {
   const controlsRef = useRef<any>(null);
   const initializedRef = useRef(false);
   const lastFocusVersionRef = useRef(-1);
+  const lastPresetVersionRef = useRef(-1);
+  const [topViewActive, setTopViewActive] = useState(false);
   const { camera } = useThree();
   useEffect(() => {
     if (!controlsRef.current) return;
@@ -433,6 +692,25 @@ function CameraRig() {
       controlsRef.current.target.copy(getCameraCenter(project, cameraState));
       controlsRef.current.update();
       initializedRef.current = true;
+      lastFocusVersionRef.current = cameraState.focusVersion;
+      lastPresetVersionRef.current = cameraState.presetVersion;
+    } else if (cameraState.presetVersion !== lastPresetVersionRef.current && cameraState.preset) {
+      lastPresetVersionRef.current = cameraState.presetVersion;
+      const center = getCameraCenter(project, cameraState);
+      controlsRef.current.target.copy(center);
+      const allParts = project.parts;
+      const spread = allParts.length > 0 ? Math.max(
+        ...allParts.map((p) => Math.max(p.width, p.height, p.thickness))
+      ) : 400;
+      const D = Math.max(900, spread * 4);
+      setTopViewActive(cameraState.preset === 'top');
+      switch (cameraState.preset) {
+        case 'front': camera.position.set(center.x, center.y + D * 0.08, center.z + D); break;
+        case 'left':  camera.position.set(center.x - D, center.y + D * 0.08, center.z); break;
+        case 'top':   camera.position.set(center.x + 1, center.y + D, center.z + 1); break;
+        case 'iso':   camera.position.set(center.x + D * 0.65, center.y + D * 0.45, center.z + D * 0.65); break;
+      }
+      controlsRef.current.update();
       lastFocusVersionRef.current = cameraState.focusVersion;
     } else if (cameraState.focusVersion !== lastFocusVersionRef.current) {
       const center = getCameraCenter(project, cameraState);
@@ -445,7 +723,18 @@ function CameraRig() {
     }
     camera.near = 5; camera.far = 12000; camera.updateProjectionMatrix();
   }, [camera, cameraState, project]);
-  return <OrbitControls ref={controlsRef} makeDefault maxPolarAngle={Math.PI / 2.05} enableDamping dampingFactor={0.08} />;
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      makeDefault
+      maxPolarAngle={topViewActive ? Math.PI * 0.95 : Math.PI / 2.05}
+      minDistance={140}
+      maxDistance={7098}
+      enableDamping
+      dampingFactor={0.08}
+      onChange={() => { if (topViewActive) setTopViewActive(false); }}
+    />
+  );
 }
 
 function EmptyHint() {
@@ -510,6 +799,9 @@ export function SceneRoot() {
   const themeMode = useAppStore((s) => s.themeMode);
   const isDarkBlue = themeMode === 'dark-blue';
   const selectPart = useAppStore((s) => s.selectPart);
+  const setCameraPreset = useAppStore((s) => s.setCameraPreset);
+  const showRoleColors = useAppStore((s) => s.showRoleColors);
+  const setShowRoleColors = useAppStore((s) => s.setShowRoleColors);
   const floorVisualY = -2.5;
   const visibleParts = useMemo(() => project.parts.filter((part) => !part.meta?.hidden), [project.parts]);
   const floorTexture = useMemo(() => {
@@ -521,7 +813,8 @@ export function SceneRoot() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    ctx.fillStyle = isDarkBlue ? '#1f2328' : '#e5e7eb';
+    // Keep the "light theme" floor look, but darken it for dark mode.
+    ctx.fillStyle = isDarkBlue ? '#9ca3af' : '#e5e7eb';
     ctx.fillRect(0, 0, size, size);
 
     // Subtle checker base keeps depth perception without thin-line shimmer.
@@ -529,7 +822,7 @@ export function SceneRoot() {
       for (let x = 0; x < size; x += cell) {
         const isAlt = ((x / cell) + (y / cell)) % 2 === 0;
         ctx.fillStyle = isAlt
-          ? (isDarkBlue ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)')
+          ? (isDarkBlue ? 'rgba(0,0,0,0.10)' : 'rgba(0,0,0,0.03)')
           : 'rgba(0,0,0,0)';
         ctx.fillRect(x, y, cell, cell);
       }
@@ -539,9 +832,9 @@ export function SceneRoot() {
     for (let i = 0; i <= size; i += cell) {
       const major = i % (cell * 4) === 0;
       ctx.strokeStyle = major
-        ? (isDarkBlue ? 'rgba(148,163,184,0.24)' : 'rgba(71,85,105,0.18)')
-        : (isDarkBlue ? 'rgba(148,163,184,0.12)' : 'rgba(71,85,105,0.09)');
-      ctx.lineWidth = major ? 1.6 : 1.1;
+        ? (isDarkBlue ? 'rgba(148,163,184,0.55)' : 'rgba(71,85,105,0.38)')
+        : (isDarkBlue ? 'rgba(148,163,184,0.45)' : 'rgba(71,85,105,0.22)');
+      ctx.lineWidth = major ? 2.2 : 1.5;
       ctx.beginPath();
       ctx.moveTo(i + 0.5, 0);
       ctx.lineTo(i + 0.5, size);
@@ -555,7 +848,7 @@ export function SceneRoot() {
     const texture = new THREE.CanvasTexture(canvas);
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(16, 16);
+    texture.repeat.set(18, 18);
     texture.generateMipmaps = true;
     texture.minFilter = THREE.LinearMipmapLinearFilter;
     texture.magFilter = THREE.LinearFilter;
@@ -631,31 +924,98 @@ export function SceneRoot() {
     return [...deduped.values()];
   }, [experimentalMoveMode, selected, selectedPartIds, visibleParts]);
 
-  return <Canvas camera={{ position: [1600, 900, 1600], fov: 28, near: 10, far: 12000 }} gl={{ antialias: true }} onPointerMissed={() => selectPart(null)}>
-    <color attach="background" args={[isDarkBlue ? '#1b1b1d' : '#f5f5f4']} />
-    <ambientLight intensity={isDarkBlue ? 1.05 : 1.2} />
-    <directionalLight position={[700, 1200, 700]} intensity={isDarkBlue ? 1.1 : 1.25} />
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, floorVisualY, 0]} receiveShadow>
-      <planeGeometry args={[8000, 8000]} />
-      <meshStandardMaterial
-        color={isDarkBlue ? '#242629' : '#e5e7eb'}
-        map={floorTexture ?? undefined}
-        side={THREE.DoubleSide}
-      />
-    </mesh>
-    {showAxisIndicator ? <AxisIndicator parts={visibleParts} /> : null}
-    {visibleParts.length === 0 ? <EmptyHint /> : null}
-    {visibleParts.map((part) => <PartMesh key={part.id} part={part} />)}
-    <SectionOverlay />
-    <MeasurementOverlay />
-    {sceneSnapCandidates.map((candidate) => <SnapPreview key={candidate.key} candidate={candidate} />)}
-    {selected && sceneSnapCandidates.length > 0 ? (
-      <Html position={[0, 260, 0]} center>
-        <div style={{ background: isDarkBlue ? 'rgba(36,36,39,0.96)' : 'rgba(255,255,255,0.95)', border: `1px solid ${isDarkBlue ? '#4ade80' : '#d9f99d'}`, borderRadius: 10, padding: '8px 12px', color: isDarkBlue ? '#bbf7d0' : '#3f6212', fontSize: 13 }}>
-          {sceneSnapCandidates.length} {t(language, 'snapCandidates')}
+  const overlayShowDrilling = useAppStore((s) => s.showDrilling);
+  const setOverlayShowDrilling = useAppStore((s) => s.setShowDrilling);
+  const overlayXrayMode = useAppStore((s) => s.xrayMode);
+  const setOverlayXrayMode = useAppStore((s) => s.setXrayMode);
+  const overlayBg = isDarkBlue ? 'rgba(24,24,27,0.82)' : 'rgba(255,255,255,0.88)';
+  const overlayBorder = isDarkBlue ? '#3f3f46' : '#d6d3d1';
+  const overlayText = isDarkBlue ? '#e5e7eb' : '#222';
+  const overlayBtn = (active: boolean): React.CSSProperties => ({
+    padding: '4px 9px', borderRadius: 6, fontSize: 12, fontWeight: active ? 700 : 400, cursor: 'pointer',
+    border: `1px solid ${active ? '#f59e0b' : overlayBorder}`,
+    background: active ? (isDarkBlue ? '#3f2c16' : '#fff7ed') : 'transparent',
+    color: active ? (isDarkBlue ? '#fde68a' : '#9a3412') : overlayText,
+  });
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%', minWidth: 0, minHeight: 0 }}>
+      <Canvas camera={{ position: [1600, 900, 1600], fov: 28, near: 10, far: 12000 }} gl={{ antialias: true }} style={{ width: '100%', height: '100%' }} onPointerMissed={() => selectPart(null)}>
+        <color attach="background" args={[isDarkBlue ? '#1b1b1d' : '#f5f5f4']} />
+        <ambientLight intensity={isDarkBlue ? 1.05 : 1.2} />
+        <directionalLight position={[700, 1200, 700]} intensity={isDarkBlue ? 1.1 : 1.25} />
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, floorVisualY, 0]} receiveShadow>
+          <planeGeometry args={[8000, 8000]} />
+          <meshBasicMaterial
+            color="#7c7c7c"
+            map={floorTexture ?? undefined}
+            side={THREE.DoubleSide}
+            toneMapped={false}
+          />
+        </mesh>
+        {showAxisIndicator ? <AxisIndicator parts={visibleParts} /> : null}
+        {visibleParts.length === 0 ? <EmptyHint /> : null}
+        {visibleParts.map((part) => <PartMesh key={part.id} part={part} />)}
+        <DrillMarkerInstances parts={visibleParts} />
+        <GrooveMarkers parts={visibleParts} />
+        <SectionOverlay />
+        <MeasurementOverlay />
+        {sceneSnapCandidates.map((candidate) => <SnapPreview key={candidate.key} candidate={candidate} />)}
+        {selected && sceneSnapCandidates.length > 0 ? (
+          <Html position={[0, 260, 0]} center>
+            <div style={{ background: isDarkBlue ? 'rgba(36,36,39,0.96)' : 'rgba(255,255,255,0.95)', border: `1px solid ${isDarkBlue ? '#4ade80' : '#d9f99d'}`, borderRadius: 10, padding: '8px 12px', color: isDarkBlue ? '#bbf7d0' : '#3f6212', fontSize: 13 }}>
+              {sceneSnapCandidates.length} {t(language, 'snapCandidates')}
+            </div>
+          </Html>
+        ) : null}
+        <CameraRig />
+      </Canvas>
+
+      {/* Camera presets + role color overlay */}
+      <div style={{ position: 'absolute', top: 10, right: 10, display: 'flex', flexDirection: 'column', gap: 6, zIndex: 5 }}>
+        <div style={{ display: 'flex', gap: 4, background: overlayBg, border: `1px solid ${overlayBorder}`, borderRadius: 8, padding: '4px 5px', backdropFilter: 'blur(8px)' }}>
+          {(['iso', 'front', 'left', 'top'] as const).map((preset) => (
+            <button key={preset} style={overlayBtn(false)} onClick={() => setCameraPreset(preset)} title={preset === 'iso' ? '3D вид' : preset === 'front' ? 'Спереди' : preset === 'left' ? 'Сбоку' : 'Сверху'}>
+              {preset === 'iso' ? '⬡' : preset === 'front' ? 'F' : preset === 'left' ? 'L' : 'T'}
+            </button>
+          ))}
+          <span aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', margin: '2px 1px', background: overlayBorder }} />
+          <button style={overlayBtn(overlayShowDrilling)} onClick={() => setOverlayShowDrilling(!overlayShowDrilling)} title={t(language, 'showDrilling')} aria-label={t(language, 'showDrilling')} aria-pressed={overlayShowDrilling}>
+            ◉
+          </button>
+          <button style={overlayBtn(overlayXrayMode)} onClick={() => setOverlayXrayMode(!overlayXrayMode)} title={t(language, 'xrayMode')} aria-label={t(language, 'xrayMode')} aria-pressed={overlayXrayMode}>
+            ◐
+          </button>
         </div>
-      </Html>
-    ) : null}
-    <CameraRig />
-  </Canvas>;
+        <button
+          style={{ ...overlayBtn(showRoleColors), background: showRoleColors ? (isDarkBlue ? '#3f2c16' : '#fff7ed') : overlayBg, backdropFilter: 'blur(8px)', whiteSpace: 'nowrap' }}
+          onClick={() => setShowRoleColors(!showRoleColors)}
+          title={language === 'ru' ? 'Цвета по роли' : 'Role colors'}
+        >
+          {language === 'ru' ? '🎨 Роли' : '🎨 Roles'}
+        </button>
+        {showRoleColors && (
+          <div style={{ background: overlayBg, border: `1px solid ${overlayBorder}`, borderRadius: 8, padding: '6px 8px', fontSize: 10, backdropFilter: 'blur(8px)', display: 'grid', gap: 2 }}>
+            {[
+              ['#818cf8', language === 'ru' ? 'Боковые' : 'Sides'],
+              ['#f472b6', language === 'ru' ? 'Верх/низ' : 'Top/btm'],
+              ['#34d399', language === 'ru' ? 'Полки' : 'Shelves'],
+              ['#fbbf24', language === 'ru' ? 'Перегородки' : 'Partitions'],
+              ['#a78bfa', language === 'ru' ? 'Задняя ст.' : 'Back panel'],
+              ['#f87171', language === 'ru' ? 'Фасады' : 'Fronts'],
+              ['#22d3ee', language === 'ru' ? 'Плинтус' : 'Plinth'],
+              ['#fb923c', language === 'ru' ? 'Ярус-делит.' : 'Tier div.'],
+            ].map(([color, label]) => (
+              <div key={color} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <div style={{ width: 10, height: 10, borderRadius: 2, background: color, flexShrink: 0 }} />
+                <span style={{ color: overlayText }}>{label}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
+
+

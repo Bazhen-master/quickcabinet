@@ -1,4 +1,4 @@
-export type JoineryType = 'none' | 'confirmat' | 'minifix-dowel' | 'shelf_pin' | 'rafix';
+export type JoineryType = 'none' | 'confirmat' | 'confirmat-dowel' | 'minifix-dowel' | 'shelf_pin' | 'rafix';
 
 export type SideJoinery = {
   left: JoineryType;

@@ -1,20 +1,25 @@
 import { create } from 'zustand';
-import { addDrillToPart, addDrillsToPart, addPart, addParts, createProject, getDrillGroupToken, moveDrillGroup, movePartsWithDependentOperations, removePartWithDependentOperations, replaceParts, updatePart, type Project } from '../domain/project';
-import { loadSavedProjectProgress, saveProjectProgress as persistProjectProgress, hasSavedProjectProgress, openProjectFromFile, trySaveProjectProgress } from '../infra/save-load';
-import { addCabinetTierDividerToSection, addPartitionToLayoutSection, addShelfToLayoutSection, buildSimpleCabinet, getCabinetModuleState, getDrawerStackForSection, getLeafSectionInnerSpan, getLeafSections, getLeafTierSections, getLocalZonesForSection, getMaxDrawerCountForClearHeight, rebuildCabinetGroup, removeCabinetElementFromLayout, replaceGroupParts, updateCabinetSectionWidths, updateCabinetTierHeight, updateLocalTierDividerLayout, updateTierDividerLayout, upsertDrawerStackInLayoutSection, type CabinetFrontMode, type CabinetFrontOpeningMode, type CabinetFrontType, type CabinetModuleState, type CabinetTopMode } from '../domain/cabinet-builder';
-import { createCabinetLayout, type DrawerRunnerLength, type DrawerRunnerLengthMode, type DrawerRunnerType } from '../domain/cabinet-layout';
+import { addDrillToPart, addDrillsToPart, addPart, addParts, createProject, getDrillGroupToken, moveDrillGroup, movePartsWithDependentOperations, removeGroupWithDependentOperations, removePartWithDependentOperations, replaceParts, updatePart, type Project } from '../domain/project';
+import { isGenericSketchName, nextSketchName, type ProjectSketch } from '../domain/sketch';
+import { loadSavedProjectProgress, openProjectFromFile, saveProjectProgress, saveToSlot as saveSlotData, loadFromSlot as loadSlotData, deleteSaveSlot as deleteSlotData } from '../infra/save-load';
+import { addPartitionToLayoutSection, addShelfToLayoutSection, buildSimpleCabinet, getCabinetModuleState, getCabinetOpenings, getDefaultTierSection, getFrontSpecId, getDrawerStackForSection, getLeafSectionInnerSpan, getLeafSections, getLeafTierSections, getLocalZonesForSection, extendOpeningRef, rebuildCabinetGroup, removeCabinetElementFromLayout, replaceGroupParts, setFrontHingeInLayout, setFrontOnOpening, setFrontsOnAllOpenings as layoutWithFrontsOnAllOpenings, updateCabinetSectionWidths, updateCabinetTierHeight, updateLocalTierDividerLayout, updateTierDividerLayout, type CabinetBackPanelKind, type CabinetPlinthKind, type CabinetFrontMode, type CabinetFrontOpeningMode, type CabinetModuleState, type CabinetOpeningRef, type CabinetTopMode } from '../domain/cabinet-builder';
+import { createCabinetLayout, getCabinetTierSpecs, removeDrawerStack, setShelfElevations, setShelfApron as setShelfApronInLayout, updateAllFronts, upsertDrawerBlockInSection, type CabinetFrontHinge, type CabinetFrontKind, type CabinetLayout, type DrawerBlockAnchor, type DrawerBlockInput, type DrawerRunnerLength, type DrawerRunnerLengthMode, type DrawerRunnerType } from '../domain/cabinet-layout';
 import { clampPartSize, createPanelPart, roundDownToMillimeter, type Part, type PartFace } from '../domain/part';
 import { createDrillOperation, getFaceAxis, type DrillOperation } from '../domain/drill';
-import { buildSnapCandidates, clampPointToFace, collidesWithAny, computeRelativePosition, getBounds, type RelativePlacementRule } from '../domain/geometry';
+import { boundsIntersect, buildSnapCandidates, clampPointToFace, collidesWithAny, computeRelativePosition, getBounds, type RelativePlacementRule } from '../domain/geometry';
 import { HOLE_TEMPLATES, type HoleTemplateId } from '../domain/templates';
 import { validateDrillOperation } from '../domain/validation';
 import { applyProject, createHistory, redo, undo, type HistoryState } from '../editor/commands';
 import { applyGeneratedJoinery, type AutoJointRuleDraft } from '../domain/auto-drilling';
 import { createEmptySideJoinery, type SideJoinery } from '../domain/joinery';
-import type { Lang } from '../i18n';
+import { t as translate, type Lang } from '../i18n';
+import { applyPresetJoinery, buildCabinetPreset, getCabinetPreset, type CabinetPresetId } from '../domain/cabinet-presets';
 import { createId } from '../shared/ids';
+import type { CabinetBuildInput } from '../domain/cabinet-builder';
+import { planModuleSplit, type SplitAxis } from '../domain/module-split';
+import { getPartOwnLabel } from '../domain/part-label';
 
-export type ToolName = 'select' | 'place-hole' | 'measure';
+export type ToolName = 'select' | 'place-hole' | 'measure' | 'place-front';
 export type SelectionMode = 'part' | 'group';
 export type ThemeMode = 'light' | 'dark-blue';
 
@@ -27,8 +32,9 @@ type Selection =
 type HoleDraft = { diameter: number; depth: number; through: boolean };
 type SelectedDrill = { partId: string; opId: string } | null;
 export type MeasuredFace = { partId: string; face: PartFace };
-type CameraState = { focusVersion: number; targetPartId: string | null; targetGroupId: string | null };
-type CabinetDraft = { width: number; height: number; depth: number; thickness: number; shelfCount: number; partitionCount: number; withBackPanel: boolean; frontType: CabinetFrontType; frontCount: number; frontMode: CabinetFrontMode; frontOpeningMode: CabinetFrontOpeningMode; topMode: CabinetTopMode; withPlinth: boolean; plinthHeight: number; withTopRails: boolean; topRailHeight: number; withAprons: boolean; tierCount: number; tierHeight: number; quickAllMinifix: boolean; quickAllConfirmat: boolean };
+type CameraState = { focusVersion: number; targetPartId: string | null; targetGroupId: string | null; preset: 'iso' | 'front' | 'left' | 'top' | null; presetVersion: number };
+type CabinetDraft = { width: number; height: number; depth: number; thickness: number; shelfCount: number; partitionCount: number; withBackPanel: boolean; backPanelKind: CabinetBackPanelKind; withHangers: boolean; withFronts: boolean; frontMode: CabinetFrontMode; frontOpeningMode: CabinetFrontOpeningMode; topMode: CabinetTopMode; withPlinth: boolean; plinthHeight: number; plinthKind: CabinetPlinthKind; backRailElevations: number[]; withTopRails: boolean; topRailHeight: number; withAprons: boolean; topOverFronts: boolean; tierCount: number; tierHeight: number; quickAllMinifix: boolean; quickAllConfirmat: boolean };
+type OpeningSelection = (CabinetOpeningRef & { groupId: string }) | null;
 type MoveDraft = { axis: 'x' | 'y' | 'z'; distance: number; targetPartId: string; relativeRule: RelativePlacementRule; offset: number };
 type SectionSelection = { groupId: string; sectionId: string; tierId?: string; zoneId?: string } | null;
 
@@ -39,6 +45,7 @@ type AppState = {
   selectedDrill: SelectedDrill;
   measuredFaces: [MeasuredFace | null, MeasuredFace | null];
   selectedSection: SectionSelection;
+  selectedOpening: OpeningSelection;
   activeTool: ToolName;
   selectionMode: SelectionMode;
   experimentalMoveMode: boolean;
@@ -56,6 +63,14 @@ type AppState = {
   camera: CameraState;
   hasSavedProgress: boolean;
   saveProgressMessage: string | null;
+  showRoleColors: boolean;
+  materialColor: string | null;
+  sketchPanelOpen: boolean;
+  activeSketchId: string | null;
+  /** Parts under the pointer in the project tree; highlighted in 3D. Transient, not part of history. */
+  hoveredPartIds: string[];
+  /** Where the hover comes from: the tree scrolls to a row only for hovers in the 3D view. */
+  hoverSource: 'tree' | 'scene' | null;
 
   setActiveTool: (tool: ToolName) => void;
   setSelectionMode: (mode: SelectionMode) => void;
@@ -78,6 +93,8 @@ type AppState = {
 
   addDemoPart: () => void;
   addCabinet: () => void;
+  /** Adds a finished preset cabinet (dresser, nightstand, TV stand, wardrobe) next to the others. */
+  addCabinetPreset: (presetId: CabinetPresetId) => void;
 
   updateHoleDraft: (patch: Partial<HoleDraft>) => void;
   updateCabinetDraft: (patch: Partial<CabinetDraft>) => void;
@@ -90,45 +107,90 @@ type AppState = {
   moveSelectedDrillGroup: (x: number, y: number) => void;
   updatePartName: (partId: string, name: string) => void;
   setPartHidden: (partId: string, hidden: boolean) => void;
+  setPartsHidden: (partIds: string[], hidden: boolean) => void;
   updatePartSize: (partId: string, patch: Partial<Pick<Part, 'width' | 'height' | 'thickness'>>) => void;
+  updatePartsSize: (partIds: string[], patch: Partial<Pick<Part, 'width' | 'height' | 'thickness'>>) => void;
+  setShelfApron: (partId: string, withApron: boolean) => void;
   updatePartPosition: (partId: string, patch: Partial<Part['position']>) => void;
   applyMoveByAxis: () => void;
+  rotateSelected90: () => void;
   applyRelativeMove: () => void;
   applySnapCandidate: (candidateId: string) => void;
   applySceneSnapCandidate: (targetPartId: string, candidateId: string) => void;
-  updateCabinetModule: (groupId: string, patch: Partial<{ name: string; width: number; height: number; depth: number; thickness: number; shelfCount: number; partitionCount: number; withBackPanel: boolean; frontType: CabinetFrontType; frontCount: number; frontMode: CabinetFrontMode; frontOpeningMode: CabinetFrontOpeningMode; topMode: CabinetTopMode; withPlinth: boolean; plinthHeight: number; withTopRails: boolean; topRailHeight: number; withAprons: boolean; tierCount: number; withTierDivider: boolean; tierHeight: number; backPanelSections: string[]; frontTierIds: string[]; position: Part['position'] }>) => void;
-  updateSelectedCabinetSectionWidths: (widths: number[]) => void;
+  updateCabinetModule: (groupId: string, patch: Partial<{ name: string; width: number; height: number; depth: number; thickness: number; shelfCount: number; partitionCount: number; withBackPanel: boolean; backPanelKind: CabinetBackPanelKind; withHangers: boolean; frontMode: CabinetFrontMode; frontOpeningMode: CabinetFrontOpeningMode; topMode: CabinetTopMode; withPlinth: boolean; plinthHeight: number; plinthKind: CabinetPlinthKind; backRailElevations: number[]; withTopRails: boolean; topRailHeight: number; withAprons: boolean; topOverFronts: boolean; tierCount: number; withTierDivider: boolean; tierHeight: number; backPanelSections: string[]; position: Part['position'] }>) => void;
+  updateSelectedCabinetSectionWidths: (widths: number[], sectionId?: string, tierId?: string, pinnedIndex?: number) => void;
   updateSelectedCabinetTierHeight: (height: number) => void;
-  updateSelectedSectionDrawerStack: (drawerCount: number, runnerType: DrawerRunnerType, runnerLength: DrawerRunnerLength, runnerLengthMode?: DrawerRunnerLengthMode) => void;
+  /** Adds or updates the drawer block at the given end of the active section (divider, columns and back panel included). */
+  upsertSelectedSectionDrawerBlock: (input: DrawerBlockInput) => void;
+  removeSelectedSectionDrawerBlock: (anchor: DrawerBlockAnchor) => void;
   addShelfToSelectedGroup: () => void;
-  addTierDividerToSelectedSection: () => void;
   addPartitionToSelectedGroup: () => void;
   duplicateSelected: () => void;
+  /** Builds an oversized cabinet (from the quick draft or an existing module) as several sheet-sized modules. */
+  splitCabinetIntoModules: (target: { kind: 'draft' } | { kind: 'module'; groupId: string }, axis: SplitAxis, requested: number) => void;
   removeSelectedCabinetElement: () => void;
+  removeGroup: (groupId: string) => void;
   toggleBackPanelForSelectedGroup: () => void;
   toggleBackPanelForSelectedTier: () => void;
-  toggleFrontsForSelectedGroup: () => void;
-  toggleFrontsForSelectedTier: () => void;
+  /**
+   * Picks the cabinet, the section/zone and the opening for a front in one step; `extend` (Shift+click) grows the picked
+   * opening up or down within its section. A drawer cell passes `null` and only selects its section.
+   */
+  selectOpening: (groupId: string, section: { sectionId: string; tierId: string; zoneId: string | null }, opening: CabinetOpeningRef | null, extend?: boolean) => void;
+  /** Puts a front over the picked opening (replacing fronts it overlaps), or removes them with `null`. */
+  setFrontOnSelectedOpening: (front: { kind: CabinetFrontKind; hinge: CabinetFrontHinge } | null) => void;
+  setFrontsOnAllOpenings: (groupId: string) => void;
+  clearAllFronts: (groupId: string) => void;
   undo: () => void;
   redo: () => void;
   focusSelection: () => void;
   resetView: () => void;
+  setCameraPreset: (preset: 'iso' | 'front' | 'left' | 'top' | null) => void;
+  setShowRoleColors: (enabled: boolean) => void;
+  setMaterialColor: (color: string | null) => void;
+  setPartsColor: (partIds: string[], color: string | null) => void;
   saveProgress: () => void;
   loadProgress: () => void;
   openProjectFile: () => Promise<void>;
   newProject: () => void;
+  /** Replaces the start-up project with the one restored from browser storage (no undo step). */
+  hydrateSavedProject: (project: Project) => void;
+  updateProjectName: (name: string) => void;
+  saveToSlot: (slot: number) => Promise<void>;
+  loadSlot: (slot: number) => Promise<void>;
+  deleteSlot: (slot: number) => Promise<void>;
+  setSketchPanelOpen: (open: boolean) => void;
+  setHoveredPartIds: (partIds: string[], source?: 'tree' | 'scene') => void;
+  setActiveSketch: (sketchId: string) => void;
+  addSketch: (sketch: ProjectSketch) => void;
+  renameSketch: (sketchId: string, name: string) => void;
+  removeSketch: (sketchId: string) => void;
 };
 
 function clampPositive(value: number, fallback: number) { return clampPartSize(value, fallback); }
-function coerceCabinetTopMode(withTopRails: boolean, topMode: CabinetTopMode) { return withTopRails ? 'inset' : topMode; }
-function coerceBackPanelAprons<T extends { withBackPanel: boolean; withAprons: boolean }>(current: T, patch: Partial<T>) {
-  const withBackPanel = patch.withBackPanel ?? current.withBackPanel;
-  const withAprons = patch.withAprons ?? current.withAprons;
-
-  if (patch.withBackPanel === true) return { withBackPanel: true, withAprons: false };
-  if (patch.withAprons === true) return { withBackPanel: false, withAprons: true };
-  return { withBackPanel, withAprons };
+function resizePart(part: Part, patch: Partial<Pick<Part, 'width' | 'height' | 'thickness'>>): Part {
+  const nextWidth = roundDownToMillimeter(clampPositive(patch.width ?? part.width, part.width), part.width);
+  const nextHeight = roundDownToMillimeter(clampPositive(patch.height ?? part.height, part.height), part.height);
+  const nextThickness = roundDownToMillimeter(clampPositive(patch.thickness ?? part.thickness, part.thickness), part.thickness);
+  const heightDelta = nextHeight - part.height;
+  const keepFacadeHoleWorldY =
+    heightDelta !== 0
+    && (part.meta?.role === 'front-left' || part.meta?.role === 'front-right' || part.meta?.role === 'drawer-front');
+  return {
+    ...part,
+    width: nextWidth,
+    height: nextHeight,
+    thickness: nextThickness,
+    operations: keepFacadeHoleWorldY
+      ? part.operations.map((op) => (
+          op.face === 'front' || op.face === 'back' || op.face === 'left' || op.face === 'right'
+            ? { ...op, y: op.y + heightDelta / 2 }
+            : op
+        ))
+      : part.operations,
+  };
 }
+function coerceCabinetTopMode(withTopRails: boolean, topMode: CabinetTopMode) { return withTopRails ? 'inset' : topMode; }
 function coerceQuickJoineryPreset<T extends { quickAllMinifix: boolean; quickAllConfirmat: boolean }>(current: T, patch: Partial<T>) {
   const quickAllMinifix = patch.quickAllMinifix ?? current.quickAllMinifix;
   const quickAllConfirmat = patch.quickAllConfirmat ?? current.quickAllConfirmat;
@@ -136,11 +198,12 @@ function coerceQuickJoineryPreset<T extends { quickAllMinifix: boolean; quickAll
   if (patch.quickAllConfirmat === true) return { quickAllMinifix: false, quickAllConfirmat: true };
   return { quickAllMinifix, quickAllConfirmat };
 }
-function clampFrontCount(value: number, fallback = 0) {
-  return Number.isFinite(value) ? Math.max(0, Math.min(4, Math.round(value))) : fallback;
-}
-function getAutoFrontCount(partitionCount: number) {
-  return Math.max(1, Math.min(4, partitionCount + 1));
+function rebuildGroupWithLayout(state: AppState, groupId: string, layout: CabinetLayout): Project | null {
+  const project = state.history.present;
+  const current = getCabinetModuleState(project.parts, groupId);
+  if (!current) return null;
+  const replacement = rebuildCabinetGroup(project.parts, groupId, { ...current, layout }, state.jointRules);
+  return replaceParts(project, replaceGroupParts(project.parts, groupId, replacement));
 }
 function applyQuickCabinetJoineryPreset(parts: Part[], draft: Pick<CabinetDraft, 'quickAllMinifix' | 'quickAllConfirmat'>) {
   const preset: SideJoinery['left'] | null = draft.quickAllMinifix ? 'minifix-dowel' : draft.quickAllConfirmat ? 'confirmat' : null;
@@ -166,8 +229,9 @@ function applyQuickCabinetJoineryPreset(parts: Part[], draft: Pick<CabinetDraft,
         },
       };
     }
-    if (role === 'back-panel' || role === 'apron') {
-      const framePreset: SideJoinery['left'] = preset === 'confirmat' ? 'confirmat' : 'none';
+    if ((role === 'back-panel' && part.meta?.sourceId !== 'hdf') || role === 'apron') {
+      // Back panels support minifix on every edge; aprons stay on confirmat only.
+      const framePreset: SideJoinery['left'] = role === 'back-panel' || preset === 'confirmat' ? preset : 'none';
       return {
         ...part,
         meta: {
@@ -287,21 +351,88 @@ type MoveCommitResult =
   | { ok: true; next: Project }
   | { ok: false; errors: string[] };
 
+/**
+ * First part the moved selection would cut into. Checked per part, not by the combined box: two shelves in different
+ * sections would otherwise "hit" the partitions between them.
+ */
+/**
+ * Regenerates auto joinery only for the cabinets that changed: one cabinet's drilling never depends on another's.
+ * A free panel (no cabinet) keeps the whole-project pass.
+ */
+function regenerateJoineryForGroups(parts: Part[], groupIds: Array<string | null | undefined>, rules: AutoJointRuleDraft): Part[] {
+  if (groupIds.length === 0 || groupIds.some((groupId) => !groupId)) return applyGeneratedJoinery(parts, rules);
+  const targetGroupIds = new Set(groupIds as string[]);
+  const regenerated = new Map(
+    applyGeneratedJoinery(parts.filter((part) => targetGroupIds.has(part.meta?.groupId ?? '')), rules).map((part) => [part.id, part])
+  );
+  return parts.map((part) => regenerated.get(part.id) ?? part);
+}
+
+function findMoveBlocker(movedParts: Part[], neighbors: Part[]) {
+  return neighbors.find((neighbor) => {
+    const neighborBounds = getBounds([neighbor]);
+    return movedParts.some((part) => boundsIntersect(getBounds([part]), neighborBounds));
+  }) ?? null;
+}
+
+/** Moved cabinet shelves keep their height in the layout, so the next group rebuild does not redistribute them. */
+function persistMovedShelfElevations(project: Project, movedParts: Part[]): Project {
+  const byGroup = new Map<string, Part[]>();
+  movedParts.forEach((part) => {
+    const groupId = part.meta?.groupId;
+    if (part.meta?.role !== 'shelf' || !groupId || !part.meta.sourceId) return;
+    byGroup.set(groupId, [...(byGroup.get(groupId) ?? []), part]);
+  });
+  let next = project;
+  byGroup.forEach((shelves, groupId) => {
+    const module = getCabinetModuleState(next.parts, groupId);
+    const carrier = next.parts.find((part) => part.meta?.groupId === groupId && part.meta?.role === 'left-side' && part.meta?.cabinetLayout);
+    if (!module || !carrier) return;
+    const elevations = new Map(shelves.map((shelf) => [shelf.meta!.sourceId!, shelf.position.y - module.position.y] as const));
+    next = updatePart(next, { ...carrier, meta: { ...carrier.meta, cabinetLayout: setShelfElevations(module.layout, elevations) } });
+  });
+  return next;
+}
+
+function commitMovedParts(project: Project, movedParts: Part[]): Project {
+  return persistMovedShelfElevations(movePartsWithDependentOperations(project, movedParts), movedParts);
+}
+
 function tryCommitMovedSelection(state: AppState, updatedSelectionParts: Part[]): MoveCommitResult {
   const project = state.history.present;
   const movedIds = new Set(updatedSelectionParts.map((part) => part.id));
-  const neighborBounds = project.parts.filter((part) => !movedIds.has(part.id)).map((part) => getBounds([part]));
-  const movedBounds = getBounds(updatedSelectionParts);
-  if (collidesWithAny(movedBounds, neighborBounds)) {
-    return { ok: false, errors: ['Move blocked: parts would intersect'] } satisfies MoveCommitResult;
+  const blocker = findMoveBlocker(updatedSelectionParts, project.parts.filter((part) => !movedIds.has(part.id)));
+  if (blocker) {
+    // Never nudge the parts somewhere else on our own: say what is in the way and leave the decision to the user.
+    const blockerName = getPartOwnLabel(blocker, state.language);
+    const message = state.language === 'ru'
+      ? `Перемещение отменено: деталь упирается в «${blockerName}»`
+      : `Move cancelled: the part would cut into "${blockerName}"`;
+    return { ok: false, errors: [message] } satisfies MoveCommitResult;
   }
-  return { ok: true, next: movePartsWithDependentOperations(project, updatedSelectionParts) } satisfies MoveCommitResult;
+  return { ok: true, next: commitMovedParts(project, updatedSelectionParts) } satisfies MoveCommitResult;
 }
 
 function updateDividerLayoutBySource(module: Parameters<typeof updateTierDividerLayout>[0], dividerSourceId: string, nextCenterY: number) {
   return dividerSourceId.startsWith('tier-divider:')
     ? updateTierDividerLayout(module, dividerSourceId, nextCenterY)
     : updateLocalTierDividerLayout(module, dividerSourceId, nextCenterY);
+}
+
+function resolveActiveCabinetSection(state: AppState) {
+  const groupId = state.selected?.type === 'group'
+    ? state.selected.groupId
+    : state.selected?.type === 'part' || state.selected?.type === 'face'
+      ? findPart(state.history.present, state.selected.partId)?.meta?.groupId ?? null
+      : null;
+  if (!groupId) return null;
+  const current = getCabinetModuleState(state.history.present.parts, groupId);
+  if (!current) return null;
+  const sections = getLeafTierSections(current);
+  const section = (state.selectedSection?.groupId === groupId
+    ? sections.find((item) => item.id === state.selectedSection?.sectionId && (!state.selectedSection?.tierId || item.tierId === state.selectedSection?.tierId))
+    : null) ?? getDefaultTierSection(sections);
+  return section ? { groupId, current, section } : null;
 }
 
 function resolveSelectedZoneId(
@@ -348,6 +479,39 @@ function findDuplicateDeltaX(project: Project, originalParts: Part[], duplicated
   }));
 }
 
+function rotatePoint90AroundAxis(
+  point: { x: number; y: number; z: number },
+  pivot: { x: number; y: number; z: number },
+  axis: 'x' | 'y' | 'z'
+) {
+  const dx = point.x - pivot.x;
+  const dy = point.y - pivot.y;
+  const dz = point.z - pivot.z;
+  if (axis === 'x') {
+    return { x: point.x, y: pivot.y - dz, z: pivot.z + dy };
+  }
+  if (axis === 'y') {
+    return { x: pivot.x - dz, y: point.y, z: pivot.z + dx };
+  }
+  return { x: pivot.x - dy, y: pivot.y + dx, z: point.z };
+}
+
+function getNextCabinetName(parts: Part[]) {
+  const groupIds = Array.from(
+    new Set(parts.map((part) => part.meta?.groupId).filter((id): id is string => typeof id === 'string' && id.length > 0))
+  );
+  let maxIndex = 0;
+  for (const groupId of groupIds) {
+    const module = getCabinetModuleState(parts, groupId);
+    if (!module) continue;
+    const match = /^Cabinet\s+(\d+)$/i.exec(module.name.trim());
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isFinite(value)) maxIndex = Math.max(maxIndex, value);
+  }
+  return `Cabinet ${maxIndex + 1}`;
+}
+
 function commitSnapCandidate(state: AppState, targetPartId: string, candidateId: string): MoveCommitResult {
   const project = state.history.present;
   const selectedParts = movedPartsForSelectionIds(project, state.selected, state.selectedPartIds);
@@ -380,7 +544,8 @@ function commitSnapCandidate(state: AppState, targetPartId: string, candidateId:
   return tryCommitMovedSelection(state, updated);
 }
 
-const initialProject = loadSavedProjectProgress() ?? createProject('Furniture MVP');
+// The autosaved project is restored asynchronously before the first render (main.tsx → hydrateSavedProject).
+const initialProject = createProject('Furniture MVP');
 
 export const useAppStore = create<AppState>((set, get) => ({
   history: createHistory(initialProject),
@@ -389,27 +554,34 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedDrill: null,
   measuredFaces: [null, null],
   selectedSection: null,
+  selectedOpening: null,
   activeTool: 'select',
   selectionMode: 'part',
   experimentalMoveMode: false,
   showDrilling: true,
   xrayMode: true,
   showAxisIndicator: false,
-  language: 'en',
+  language: 'ru',
   themeMode: 'dark-blue',
   snapGrid: 16,
-  holeDraft: { diameter: 5, depth: 12, through: false },
-  cabinetDraft: { width: 800, height: 720, depth: 560, thickness: 16, shelfCount: 0, partitionCount: 0, withBackPanel: false, frontType: 'none', frontCount: 0, frontMode: 'overlay', frontOpeningMode: 'handleless', topMode: 'overlay', withPlinth: false, plinthHeight: 60, withTopRails: false, topRailHeight: 60, withAprons: false, tierCount: 1, tierHeight: 0, quickAllMinifix: false, quickAllConfirmat: false },
+  holeDraft: { diameter: 60, depth: 16, through: false },
+  cabinetDraft: { width: 800, height: 720, depth: 560, thickness: 16, shelfCount: 0, partitionCount: 0, withBackPanel: false, backPanelKind: 'panel', withHangers: false, withFronts: false, frontMode: 'overlay', frontOpeningMode: 'handleless', topMode: 'overlay', withPlinth: false, plinthHeight: 60, plinthKind: 'frame', backRailElevations: [], withTopRails: false, topRailHeight: 60, withAprons: false, topOverFronts: false, tierCount: 1, tierHeight: 0, quickAllMinifix: false, quickAllConfirmat: false },
   jointRules: { frontOffset: 64, backOffset: 64, shelfPinDiameter: 5, camDowelSpacing: 32 },
   moveDraft: { axis: 'y', distance: 0, targetPartId: '', relativeRule: 'right-of', offset: 0 },
   lastValidationErrors: [],
-  camera: { focusVersion: 0, targetPartId: null, targetGroupId: null },
-  hasSavedProgress: hasSavedProjectProgress(),
+  camera: { focusVersion: 0, targetPartId: null, targetGroupId: null, preset: null, presetVersion: 0 },
+  hasSavedProgress: false,
   saveProgressMessage: null,
+  showRoleColors: false,
+  materialColor: null,
+  sketchPanelOpen: false,
+  activeSketchId: null,
+  hoveredPartIds: [],
+  hoverSource: null,
 
   setActiveTool: (tool) => set((state) => ({ activeTool: tool, measuredFaces: tool === 'measure' ? state.measuredFaces : [null, null] })),
   setSelectionMode: (mode) => set({ selectionMode: mode }),
-  setSelectedSection: (groupId, sectionId, tierId, zoneId) => set({ selectedSection: groupId && sectionId ? { groupId, sectionId, tierId: tierId ?? undefined, zoneId: zoneId ?? undefined } : null }),
+  setSelectedSection: (groupId, sectionId, tierId, zoneId) => set({ selectedOpening: null, selectedSection: groupId && sectionId ? { groupId, sectionId, tierId: tierId ?? undefined, zoneId: zoneId ?? undefined } : null }),
   setExperimentalMoveMode: (enabled) => set({ experimentalMoveMode: enabled }),
   setShowDrilling: (enabled) => set({ showDrilling: enabled }),
   setXrayMode: (enabled) => set({ xrayMode: enabled }),
@@ -536,7 +708,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   addCabinet: () => {
     const state = get();
     const project = state.history.present;
-    const centerX = project.parts.length * 180;
+    const existingBounds = project.parts.length > 0 ? getBounds(project.parts) : null;
+    const centerX = existingBounds ? existingBounds.maxX + (state.cabinetDraft.width ?? 600) / 2 + 10 : 0;
     const parts = applyGeneratedJoinery(
       applyQuickCabinetJoineryPreset(
         buildSimpleCabinet({ ...state.cabinetDraft, name: `Cabinet ${Math.max(1, project.parts.filter((part) => part.meta?.groupId).length + 1)}`, position: { x: centerX, y: 0, z: 0 } }),
@@ -549,12 +722,48 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ history: applyProject(state.history, next), selected: groupId ? { type: 'group', groupId } : { type: 'part', partId: parts[0].id }, selectedPartIds: groupId ? [] : [parts[0].id], selectedDrill: null, lastValidationErrors: [] });
   },
 
+  addCabinetPreset: (presetId) => {
+    const state = get();
+    const project = state.history.present;
+    const preset = getCabinetPreset(presetId);
+    if (!preset) return;
+    const existingBounds = project.parts.length > 0 ? getBounds(project.parts) : null;
+    const centerX = existingBounds ? existingBounds.maxX + preset.input.width / 2 + 10 : 0;
+    const parts = applyGeneratedJoinery(
+      // The preset's own fastening (e.g. a minifix back panel) goes over the quick-cabinet fastener choice.
+      applyPresetJoinery(applyQuickCabinetJoineryPreset(buildCabinetPreset(presetId, translate(state.language, preset.labelKey), { x: centerX, y: 0, z: 0 }), state.cabinetDraft), presetId),
+      state.jointRules
+    );
+    const groupId = parts[0]?.meta?.groupId ?? null;
+    if (!groupId) return;
+    set({
+      history: applyProject(state.history, addParts(project, parts)),
+      selected: { type: 'group', groupId },
+      selectedPartIds: [],
+      selectedDrill: null,
+      selectedSection: null,
+      selectedOpening: null,
+      lastValidationErrors: [],
+    });
+  },
+
   updateHoleDraft: (patch) => set((state) => ({ holeDraft: { ...state.holeDraft, ...patch } })),
   updateCabinetDraft: (patch) => set((state) => {
-    const backPanelAprons = coerceBackPanelAprons(state.cabinetDraft, patch);
     const quickPreset = coerceQuickJoineryPreset(state.cabinetDraft, patch);
-    const nextDraft = { ...state.cabinetDraft, ...patch, ...backPanelAprons, ...quickPreset };
-    return { cabinetDraft: { ...nextDraft, topMode: coerceCabinetTopMode(nextDraft.withTopRails, nextDraft.topMode) } };
+    const current = state.cabinetDraft;
+    // Same sheet-size limit as existing modules: otherwise panels get clamped while the body keeps the oversized size.
+    const sizes = {
+      width: clampPositive(patch.width ?? current.width, current.width),
+      height: clampPositive(patch.height ?? current.height, current.height),
+      depth: clampPositive(patch.depth ?? current.depth, current.depth),
+      thickness: clampPositive(patch.thickness ?? current.thickness, current.thickness),
+    };
+    const nextDraft = { ...current, ...patch, ...sizes, ...quickPreset };
+    // A top over the fronts and top rails exclude each other (rails need an inset top): the one switched on wins.
+    const topOverFronts = patch.withTopRails === true ? false : nextDraft.topOverFronts;
+    const withTopRails = patch.topOverFronts === true ? false : nextDraft.withTopRails;
+    const topMode: CabinetTopMode = topOverFronts ? 'overlay' : coerceCabinetTopMode(withTopRails, nextDraft.topMode);
+    return { cabinetDraft: { ...nextDraft, topOverFronts, withTopRails, topMode } };
   }),
   updateJointRules: (patch) => {
     const state = get();
@@ -569,13 +778,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get();
     const project = state.history.present;
     const part = project.parts.find((item) => item.id === partId);
-    if (!part) return;
-    const next = replaceParts(project, applyGeneratedJoinery(project.parts.map((item) => (
-      item.id === partId
-        ? { ...item, meta: { ...item.meta, hingeEdge } }
-        : item
-    )), state.jointRules));
-    set({ history: applyProject(state.history, next), lastValidationErrors: [] });
+    const frontId = part ? getFrontSpecId(part) : null;
+    const groupId = part?.meta?.groupId;
+    const current = groupId ? getCabinetModuleState(project.parts, groupId) : null;
+    if (!frontId || !groupId || !current) return;
+    // Fronts are rebuilt from their spec, so the hinge side is stored there.
+    const next = rebuildGroupWithLayout(state, groupId, setFrontHingeInLayout(current.layout, frontId, hingeEdge));
+    if (next) set({ history: applyProject(state.history, next), lastValidationErrors: [] });
   },
   updateBatchPartJoinery: (partIds, patch) => {
     const state = get();
@@ -585,7 +794,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!targetIds.has(part.id)) return part;
       return { ...part, meta: { ...part.meta, joinery: { ...(part.meta?.joinery ?? createEmptySideJoinery()), ...patch } } };
     });
-    const next = replaceParts(project, applyGeneratedJoinery(patchedParts, state.jointRules));
+    const touchedGroupIds = project.parts.filter((part) => targetIds.has(part.id)).map((part) => part.meta?.groupId);
+    const next = replaceParts(project, regenerateJoineryForGroups(patchedParts, touchedGroupIds, state.jointRules));
     set({ history: applyProject(state.history, next), lastValidationErrors: [] });
   },
   addHoleToFace: (partId, face, x, y) => {
@@ -599,7 +809,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const errors = validateDrillOperation(part, op);
     if (errors.length > 0) return set({ lastValidationErrors: errors });
     const next = addDrillToPart(project, partId, op);
-    set({ history: applyProject(state.history, next), selected: { type: 'part', partId }, selectedPartIds: [partId], selectedDrill: { partId, opId: op.id }, lastValidationErrors: [] });
+    set({
+      history: applyProject(state.history, next),
+      activeTool: 'select',
+      selected: { type: 'part', partId },
+      selectedPartIds: [partId],
+      selectedDrill: { partId, opId: op.id },
+      lastValidationErrors: [],
+    });
   },
   applyTemplateToSelectedFace: (templateId) => {
     const state = get();
@@ -630,17 +847,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const state = get(); const project = state.history.present; const part = project.parts.find((p) => p.id === partId); if (!part) return;
     set({ history: applyProject(state.history, updatePart(project, { ...part, name })) });
   },
-  setPartHidden: (partId, hidden) => {
+  setPartHidden: (partId, hidden) => get().setPartsHidden([partId], hidden),
+  setPartsHidden: (partIds, hidden) => {
     const state = get();
     const project = state.history.present;
-    const part = project.parts.find((item) => item.id === partId);
-    if (!part) return;
-    const updated = { ...part, meta: { ...part.meta, hidden } };
-    const nextProject = updatePart(project, updated);
-    const nextSelectedPartIds = state.selectedPartIds.filter((id) => id !== partId);
+    const targetIds = new Set(partIds);
+    if (!project.parts.some((part) => targetIds.has(part.id))) return;
+    const nextProject = replaceParts(project, project.parts.map((part) => (
+      targetIds.has(part.id) ? { ...part, meta: { ...part.meta, hidden } } : part
+    )));
+    const nextSelectedPartIds = state.selectedPartIds.filter((id) => !targetIds.has(id));
     const shouldClearPrimary =
       (state.selected?.type === 'part' || state.selected?.type === 'face') &&
-      state.selected.partId === partId &&
+      targetIds.has(state.selected.partId) &&
       hidden;
     const fallbackPrimaryId = nextSelectedPartIds[nextSelectedPartIds.length - 1] ?? null;
     const nextSelected = shouldClearPrimary
@@ -656,29 +875,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       lastValidationErrors: [],
     });
   },
-  updatePartSize: (partId, patch) => {
-    const state = get(); const project = state.history.present; const part = project.parts.find((p) => p.id === partId); if (!part) return;
-    const nextWidth = roundDownToMillimeter(clampPositive(patch.width ?? part.width, part.width), part.width);
-    const nextHeight = roundDownToMillimeter(clampPositive(patch.height ?? part.height, part.height), part.height);
-    const nextThickness = roundDownToMillimeter(clampPositive(patch.thickness ?? part.thickness, part.thickness), part.thickness);
-    const heightDelta = nextHeight - part.height;
-    const keepFacadeHoleWorldY =
-      heightDelta !== 0
-      && (part.meta?.role === 'front-left' || part.meta?.role === 'front-right' || part.meta?.role === 'drawer-front');
-    const updated: Part = {
-      ...part,
-      width: nextWidth,
-      height: nextHeight,
-      thickness: nextThickness,
-      operations: keepFacadeHoleWorldY
-        ? part.operations.map((op) => (
-            op.face === 'front' || op.face === 'back' || op.face === 'left' || op.face === 'right'
-              ? { ...op, y: op.y + heightDelta / 2 }
-              : op
-          ))
-        : part.operations,
-    };
-    set({ history: applyProject(state.history, updatePart(project, updated)) });
+  updatePartSize: (partId, patch) => get().updatePartsSize([partId], patch),
+  // One undo step for the whole selection.
+  updatePartsSize: (partIds, patch) => {
+    const state = get(); const project = state.history.present;
+    const targetIds = new Set(partIds);
+    if (!project.parts.some((part) => targetIds.has(part.id))) return;
+    set({ history: applyProject(state.history, replaceParts(project, project.parts.map((part) => (targetIds.has(part.id) ? resizePart(part, patch) : part)))) });
+  },
+  setShelfApron: (partId, withApron) => {
+    const state = get(); const project = state.history.present;
+    const part = findPart(project, partId);
+    const groupId = part?.meta?.groupId;
+    const shelfId = part?.meta?.sourceId;
+    if (part?.meta?.role !== 'shelf' || !groupId || !shelfId) return;
+    const current = getCabinetModuleState(project.parts, groupId); if (!current) return;
+    const layout = setShelfApronInLayout(current.layout, shelfId, withApron);
+    const replacement = rebuildCabinetGroup(project.parts, groupId, { ...current, layout }, state.jointRules);
+    set({ history: applyProject(state.history, replaceParts(project, replaceGroupParts(project.parts, groupId, replacement))), lastValidationErrors: [] });
   },
   updatePartPosition: (partId, patch) => {
     const state = get(); const project = state.history.present; const part = project.parts.find((p) => p.id === partId); if (!part) return;
@@ -686,7 +900,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const current = getCabinetModuleState(project.parts, part.meta.groupId);
       if (!current) return;
       const layout = updateDividerLayoutBySource(current, part.meta?.sourceId ?? '', patch.y);
-      const replacement = applyGeneratedJoinery(rebuildCabinetGroup(project.parts, part.meta.groupId, { ...current, layout }), state.jointRules);
+      const replacement = rebuildCabinetGroup(project.parts, part.meta.groupId, { ...current, layout }, state.jointRules);
       const next = replaceParts(project, replaceGroupParts(project.parts, part.meta.groupId, replacement));
       set({ history: applyProject(state.history, next), lastValidationErrors: [] });
       return;
@@ -711,12 +925,68 @@ export const useAppStore = create<AppState>((set, get) => ({
       const current = getCabinetModuleState(state.history.present.parts, groupId);
       if (!current) return;
       const layout = updateDividerLayoutBySource(current, divider.meta?.sourceId ?? '', divider.position.y + distance);
-      const replacement = applyGeneratedJoinery(rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout }), state.jointRules);
+      const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout }, state.jointRules);
       const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
       set({ history: applyProject(state.history, next), lastValidationErrors: [] });
       return;
     }
     const updated = selectedParts.map((part) => ({ ...part, position: { ...part.position, [axis]: part.position[axis] + distance } }));
+    const result = tryCommitMovedSelection(state, updated);
+    if (result.ok) {
+      set({ history: applyProject(state.history, result.next), lastValidationErrors: [] });
+      return;
+    }
+    set({ lastValidationErrors: result.errors });
+  },
+  rotateSelected90: () => {
+    const state = get();
+    const selectedParts = movedPartsForSelectionIds(state.history.present, state.selected, state.selectedPartIds);
+    if (selectedParts.length === 0) return;
+    const axis = state.moveDraft.axis;
+
+    if (state.selected?.type === 'group') {
+      const module = getCabinetModuleState(state.history.present.parts, state.selected.groupId);
+      if (module) {
+        const rotatedDims =
+          axis === 'x'
+            ? { width: module.width, height: module.depth, depth: module.height }
+            : axis === 'y'
+              ? { width: module.depth, height: module.height, depth: module.width }
+              : { width: module.height, height: module.width, depth: module.depth };
+        const replacement = rebuildCabinetGroup(state.history.present.parts, module.groupId, {
+            ...module,
+            ...rotatedDims,
+          }, state.jointRules);
+        const next = replaceParts(
+          state.history.present,
+          replaceGroupParts(state.history.present.parts, module.groupId, replacement)
+        );
+        set({ history: applyProject(state.history, next), lastValidationErrors: [] });
+        return;
+      }
+    }
+
+    const bounds = getBounds(selectedParts);
+    const pivot = {
+      x: (bounds.minX + bounds.maxX) / 2,
+      y: (bounds.minY + bounds.maxY) / 2,
+      z: (bounds.minZ + bounds.maxZ) / 2,
+    };
+    const updated = selectedParts.map((part) => {
+      const rotated = rotatePoint90AroundAxis(part.position, pivot, axis);
+      const rotatedDims =
+        axis === 'x'
+          ? { width: part.width, height: part.thickness, thickness: part.height }
+          : axis === 'y'
+            ? { width: part.thickness, height: part.height, thickness: part.width }
+            : { width: part.height, height: part.width, thickness: part.thickness };
+      return {
+        ...part,
+        ...rotatedDims,
+        position: rotated,
+        rotation: { ...part.rotation, [axis]: part.rotation[axis] + Math.PI / 2 },
+      };
+    });
     const result = tryCommitMovedSelection(state, updated);
     if (result.ok) {
       set({ history: applyProject(state.history, result.next), lastValidationErrors: [] });
@@ -767,23 +1037,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     const partitionCount = Math.max(0, Math.round(patch.partitionCount ?? current.partitionCount));
     const nextLayout = patch.shelfCount !== undefined || patch.partitionCount !== undefined ? createCabinetLayout(partitionCount, shelfCount) : current.layout;
     const nextWithPlinth = patch.withPlinth ?? current.withPlinth;
-    const nextWithTopRails = patch.withTopRails ?? current.withTopRails;
-    const nextTopMode = coerceCabinetTopMode(nextWithTopRails, patch.topMode ?? current.topMode);
-    const backPanelAprons = coerceBackPanelAprons(current, patch);
+    // A top over the fronts and top rails exclude each other: the one switched on wins.
+    const nextTopOverFronts = patch.withTopRails === true ? false : (patch.topOverFronts ?? current.topOverFronts);
+    const nextWithTopRails = patch.topOverFronts === true ? false : (patch.withTopRails ?? current.withTopRails);
+    const nextTopMode: CabinetTopMode = nextTopOverFronts ? 'overlay' : coerceCabinetTopMode(nextWithTopRails, patch.topMode ?? current.topMode);
     const nextTierCount = Math.max(1, Math.round(patch.tierCount ?? current.tierCount));
-    const nextFrontCount = clampFrontCount(patch.frontCount ?? current.frontCount, current.frontCount);
-    const nextDraft = { ...current, ...patch, width: clampPositive(patch.width ?? current.width, current.width), height: clampPositive(patch.height ?? current.height, current.height), depth: clampPositive(patch.depth ?? current.depth, current.depth), thickness: clampPositive(patch.thickness ?? current.thickness, current.thickness), shelfCount, partitionCount, withBackPanel: backPanelAprons.withBackPanel, frontType: (nextFrontCount > 0 ? 'double' : 'none') as CabinetFrontType, frontCount: nextFrontCount, frontMode: patch.frontMode ?? current.frontMode, frontOpeningMode: patch.frontOpeningMode ?? current.frontOpeningMode ?? 'handleless', topMode: nextTopMode, withPlinth: nextWithPlinth, plinthHeight: clampPositive(patch.plinthHeight ?? current.plinthHeight, current.plinthHeight), withTopRails: nextWithTopRails, topRailHeight: clampPositive(patch.topRailHeight ?? current.topRailHeight, current.topRailHeight), withAprons: backPanelAprons.withAprons, withTierDivider: nextTierCount > 1, tierCount: nextTierCount, tierHeight: clampPositive(patch.tierHeight ?? current.tierHeight, current.tierHeight), backPanelSections: patch.backPanelSections ?? current.backPanelSections, frontTierIds: patch.frontTierIds ?? current.frontTierIds, position: { ...current.position, ...(patch.position ?? {}) }, layout: nextLayout };
-    const replacement = applyGeneratedJoinery(
-      rebuildCabinetGroup(project.parts, groupId, { name: nextDraft.name, width: nextDraft.width, height: nextDraft.height, depth: nextDraft.depth, thickness: nextDraft.thickness, shelfCount: nextDraft.shelfCount, partitionCount: nextDraft.partitionCount, withBackPanel: nextDraft.withBackPanel, frontType: nextDraft.frontType, frontCount: nextDraft.frontCount, frontMode: nextDraft.frontMode, frontOpeningMode: nextDraft.frontOpeningMode, topMode: nextDraft.topMode, withPlinth: nextDraft.withPlinth, plinthHeight: nextDraft.plinthHeight, withTopRails: nextDraft.withTopRails, topRailHeight: nextDraft.topRailHeight, withAprons: nextDraft.withAprons, withTierDivider: nextDraft.withTierDivider, tierCount: nextDraft.tierCount, tierHeight: nextDraft.tierHeight, backPanelSections: nextDraft.backPanelSections, frontTierIds: nextDraft.frontTierIds, position: nextDraft.position, layout: nextDraft.layout }),
-      state.jointRules
-    );
+    const nextDraft = { ...current, ...patch, width: clampPositive(patch.width ?? current.width, current.width), height: clampPositive(patch.height ?? current.height, current.height), depth: clampPositive(patch.depth ?? current.depth, current.depth), thickness: clampPositive(patch.thickness ?? current.thickness, current.thickness), shelfCount, partitionCount, withBackPanel: patch.withBackPanel ?? current.withBackPanel, frontMode: patch.frontMode ?? current.frontMode, frontOpeningMode: patch.frontOpeningMode ?? current.frontOpeningMode ?? 'handleless', topMode: nextTopMode, withPlinth: nextWithPlinth, plinthHeight: clampPositive(patch.plinthHeight ?? current.plinthHeight, current.plinthHeight), withTopRails: nextWithTopRails, topRailHeight: clampPositive(patch.topRailHeight ?? current.topRailHeight, current.topRailHeight), withAprons: patch.withAprons ?? current.withAprons, topOverFronts: nextTopOverFronts, withTierDivider: nextTierCount > 1, tierCount: nextTierCount, tierHeight: clampPositive(patch.tierHeight ?? current.tierHeight, current.tierHeight), backPanelSections: patch.backPanelSections ?? current.backPanelSections, position: { ...current.position, ...(patch.position ?? {}) }, layout: nextLayout };
+    const replacement = rebuildCabinetGroup(project.parts, groupId, { name: nextDraft.name, width: nextDraft.width, height: nextDraft.height, depth: nextDraft.depth, thickness: nextDraft.thickness, shelfCount: nextDraft.shelfCount, partitionCount: nextDraft.partitionCount, withBackPanel: nextDraft.withBackPanel, backPanelKind: nextDraft.backPanelKind, withHangers: nextDraft.withHangers, frontMode: nextDraft.frontMode, frontOpeningMode: nextDraft.frontOpeningMode, topMode: nextDraft.topMode, withPlinth: nextDraft.withPlinth, plinthHeight: nextDraft.plinthHeight, plinthKind: nextDraft.plinthKind, backRailElevations: nextDraft.backRailElevations, withTopRails: nextDraft.withTopRails, topRailHeight: nextDraft.topRailHeight, withAprons: nextDraft.withAprons, topOverFronts: nextDraft.topOverFronts, withTierDivider: nextDraft.withTierDivider, tierCount: nextDraft.tierCount, tierHeight: nextDraft.tierHeight, backPanelSections: nextDraft.backPanelSections, position: nextDraft.position, layout: nextDraft.layout }, state.jointRules);
     const next = replaceParts(project, replaceGroupParts(project.parts, groupId, replacement));
     const nextSections = getLeafSections(nextDraft);
     const nextLeafSections = getLeafTierSections(nextDraft as any);
     const selectedSection = state.selectedSection?.groupId === groupId && nextLeafSections.some((section) => section.id === state.selectedSection?.sectionId && section.tierId === state.selectedSection?.tierId) ? state.selectedSection : null;
     set({ history: applyProject(state.history, next), selected: { type: 'group', groupId }, selectedPartIds: [], selectedSection, lastValidationErrors: [] });
   },
-  updateSelectedCabinetSectionWidths: (widths) => {
+  updateSelectedCabinetSectionWidths: (widths, sectionId, tierId, pinnedIndex) => {
     const state = get();
     const groupId = state.selected?.type === 'group'
       ? state.selected.groupId
@@ -793,11 +1060,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!groupId) return;
     const current = getCabinetModuleState(state.history.present.parts, groupId);
     if (!current) return;
-    const layout = updateCabinetSectionWidths(current, widths, state.selectedSection?.sectionId, state.selectedSection?.tierId);
-    const replacement = applyGeneratedJoinery(
-      rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout }),
-      state.jointRules
-    );
+    const resolvedSectionId = sectionId ?? state.selectedSection?.sectionId;
+    const resolvedTierId = tierId ?? state.selectedSection?.tierId;
+    const layout = updateCabinetSectionWidths(current, widths, resolvedSectionId, resolvedTierId, pinnedIndex);
+    const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout }, state.jointRules);
     const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
     set({ history: applyProject(state.history, next), selected: { type: 'group', groupId }, selectedPartIds: [], selectedSection: state.selectedSection, lastValidationErrors: [] });
   },
@@ -814,51 +1080,47 @@ export const useAppStore = create<AppState>((set, get) => ({
     const tierId = state.selectedSection?.groupId === groupId ? state.selectedSection?.tierId ?? null : null;
     if (!tierId) return;
     const layout = updateCabinetTierHeight(current, tierId, height);
-    const replacement = applyGeneratedJoinery(
-      rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout }),
-      state.jointRules
-    );
+    const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout }, state.jointRules);
     const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
     set({ history: applyProject(state.history, next), selected: { type: 'group', groupId }, selectedPartIds: [], selectedSection: state.selectedSection, lastValidationErrors: [] });
   },
-  updateSelectedSectionDrawerStack: (drawerCount, runnerType, runnerLength, runnerLengthMode = 'manual') => {
+  upsertSelectedSectionDrawerBlock: (input) => {
     const state = get();
-    const groupId = state.selected?.type === 'group'
-      ? state.selected.groupId
-      : state.selected?.type === 'part' || state.selected?.type === 'face'
-      ? findPart(state.history.present, state.selected.partId)?.meta?.groupId ?? null
-      : null;
-    if (!groupId) return;
-    const current = getCabinetModuleState(state.history.present.parts, groupId);
-    if (!current) return;
-    const targetSection = state.selectedSection?.groupId === groupId
-      ? getLeafTierSections(current).find(
-          (section) => section.id === state.selectedSection?.sectionId
-            && (!state.selectedSection?.tierId || section.tierId === state.selectedSection?.tierId)
-        ) ?? null
-      : null;
-    const fallbackTierSection = getLeafTierSections(current)[0] ?? null;
-    const targetSectionId = targetSection?.id ?? fallbackTierSection?.id ?? getLeafSections(current)[0]?.id;
-    if (!targetSectionId) return;
-    const targetZoneId = resolveSelectedZoneId(current, groupId, state.selectedSection, targetSectionId, targetSection?.tierId ?? fallbackTierSection?.tierId ?? null);
-    const zones = getLocalZonesForSection(current, targetSectionId, targetSection?.tierId ?? fallbackTierSection?.tierId ?? undefined);
-    const targetZone = targetZoneId
-      ? zones.find((zone) => zone.id === targetZoneId) ?? null
-      : zones[0] ?? null;
-    const maxDrawerCount = getMaxDrawerCountForClearHeight(targetZone?.clearHeight ?? targetSection?.clearHeight ?? fallbackTierSection?.clearHeight ?? 0);
-    const safeDrawerCount = Math.max(0, Math.min(Math.round(drawerCount), maxDrawerCount));
-    const { layout, drawerStack } = upsertDrawerStackInLayoutSection(current, targetSectionId, safeDrawerCount, runnerType, runnerLength, targetSection?.tierId, targetZoneId, runnerLengthMode);
-    const resolvedTierId = targetSection?.tierId ?? fallbackTierSection?.tierId ?? null;
-    const replacement = applyGeneratedJoinery(
-      rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }),
-      state.jointRules
-    );
+    const target = resolveActiveCabinetSection(state);
+    if (!target) return;
+    const { groupId, current, section } = target;
+    const { layout, drawerStack } = upsertDrawerBlockInSection(current.layout, section.id, section.tierId, input);
+    if (!drawerStack) {
+      set({ lastValidationErrors: ['В секции не больше 4 разделителей — блок ящиков не поместится'] });
+      return;
+    }
+    const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }, state.jointRules);
     const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
     set({
       history: applyProject(state.history, next),
-      selected: { type: 'group', groupId },
-      selectedPartIds: [],
-      selectedSection: { groupId, sectionId: targetSectionId, tierId: resolvedTierId ?? undefined, zoneId: targetZoneId ?? undefined },
+      selectedSection: { groupId, sectionId: section.id, tierId: section.tierId },
+      lastValidationErrors: [],
+    });
+  },
+  removeSelectedSectionDrawerBlock: (anchor) => {
+    const state = get();
+    const target = resolveActiveCabinetSection(state);
+    if (!target) return;
+    const { groupId, current, section } = target;
+    const stack = getCabinetTierSpecs(current.layout)
+      .flatMap((tier) => tier.id === section.tierId ? tier.layout.drawers ?? [] : [])
+      .find((drawer) => drawer.sectionId === section.id && drawer.block?.anchor === anchor);
+    if (!stack) return;
+    const layout = removeDrawerStack(current.layout, stack.id);
+    const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }, state.jointRules);
+    const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
+    const selectedPartId = state.selected?.type === 'part' || state.selected?.type === 'face' ? state.selected.partId : null;
+    const selectionGone = selectedPartId !== null && !next.parts.some((part) => part.id === selectedPartId);
+    set({
+      history: applyProject(state.history, next),
+      selected: selectionGone ? { type: 'group', groupId } : state.selected,
+      selectedPartIds: selectionGone ? [] : state.selectedPartIds,
+      selectedSection: { groupId, sectionId: section.id, tierId: section.tierId },
       lastValidationErrors: [],
     });
   },
@@ -871,13 +1133,13 @@ export const useAppStore = create<AppState>((set, get) => ({
             && (!state.selectedSection?.tierId || section.tierId === state.selectedSection?.tierId)
         ) ?? null
       : null;
-    const fallbackTierSection = getLeafTierSections(current)[0] ?? null;
+    const fallbackTierSection = getDefaultTierSection(getLeafTierSections(current));
     const targetSectionId = targetSection?.id ?? fallbackTierSection?.id;
     if (!targetSectionId) return;
     const resolvedTierId = targetSection?.tierId ?? fallbackTierSection?.tierId ?? null;
     const targetZoneId = resolveSelectedZoneId(current, groupId, state.selectedSection, targetSectionId, resolvedTierId);
     const { layout } = addShelfToLayoutSection(current, targetSectionId, resolvedTierId ?? undefined, targetZoneId);
-    const replacement = applyGeneratedJoinery(rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }), state.jointRules);
+    const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }, state.jointRules);
     const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
     set({
       history: applyProject(state.history, next),
@@ -887,27 +1149,73 @@ export const useAppStore = create<AppState>((set, get) => ({
       lastValidationErrors: [],
     });
   },
-  addTierDividerToSelectedSection: () => {
-    const state = get(); const groupId = state.selected?.type === 'group' ? state.selected.groupId : state.selected?.type === 'part' || state.selected?.type === 'face' ? findPart(state.history.present, state.selected.partId)?.meta?.groupId ?? null : null; if (!groupId) return;
-    const current = getCabinetModuleState(state.history.present.parts, groupId); if (!current) return;
-    const targetSection = state.selectedSection?.groupId === groupId
-      ? getLeafTierSections(current).find(
-          (section) => section.id === state.selectedSection?.sectionId
-            && (!state.selectedSection?.tierId || section.tierId === state.selectedSection?.tierId)
-        ) ?? null
-      : null;
-    const fallbackTierSection = getLeafTierSections(current)[0] ?? null;
-    const targetSectionId = targetSection?.id ?? fallbackTierSection?.id;
-    if (!targetSectionId) return;
-    const resolvedTierId = targetSection?.tierId ?? fallbackTierSection?.tierId ?? null;
-    const { layout } = addCabinetTierDividerToSection(current, targetSectionId, resolvedTierId ?? undefined);
-    const replacement = applyGeneratedJoinery(rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }), state.jointRules);
-    const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
+  splitCabinetIntoModules: (target, axis, requested) => {
+    const state = get();
+    const plan = planModuleSplit(axis, requested);
+    if (!plan) return;
+    const project = state.history.present;
+    const current = target.kind === 'module' ? getCabinetModuleState(project.parts, target.groupId) : null;
+    if (target.kind === 'module' && !current) return;
+
+    // Section/tier ids of the old layout don't apply to the new sizes, so modules get a fresh layout.
+    let base: CabinetBuildInput;
+    if (current) {
+      const { groupId: _groupId, layout: _layout, backPanelSections: _backPanelSections, position: _position, ...rest } = current;
+      base = { ...rest, withFronts: getCabinetTierSpecs(current.layout).some((tier) => (tier.layout.fronts?.length ?? 0) > 0) };
+    } else {
+      base = { ...state.cabinetDraft };
+    }
+
+    const remaining = current ? removeGroupWithDependentOperations(project, current.groupId) : project;
+    const otherBounds = remaining.parts.length > 0 ? getBounds(remaining.parts) : null;
+    const origin = current
+      ? { left: current.position.x - current.width / 2, centerX: current.position.x, y: current.position.y, z: current.position.z }
+      : {
+          left: otherBounds ? otherBounds.maxX + 10 : -plan.requested / 2,
+          centerX: otherBounds ? otherBounds.maxX + base.width / 2 + 10 : 0,
+          y: 0,
+          z: 0,
+        };
+
+    const count = plan.sizes.length;
+    const newParts: Part[] = [];
+    let offset = 0;
+    let firstGroupId: string | null = null;
+    plan.sizes.forEach((size, index) => {
+      const isFirst = index === 0;
+      const isLast = index === count - 1;
+      const input: CabinetBuildInput = axis === 'width'
+        ? {
+            ...base,
+            width: size,
+            partitionCount: Math.max(0, Math.round(((base.partitionCount ?? 0) + 1) / count) - 1),
+            position: { x: origin.left + offset + size / 2, y: origin.y, z: origin.z },
+          }
+        : {
+            ...base,
+            height: size,
+            // Plinth belongs to the bottom module, top rails to the top one; upper modules are single-tier.
+            withPlinth: isFirst ? base.withPlinth : false,
+            withTopRails: isLast ? base.withTopRails : false,
+            tierCount: isFirst ? base.tierCount : 1,
+            withTierDivider: isFirst ? base.withTierDivider : false,
+            position: { x: origin.centerX, y: origin.y + offset, z: origin.z },
+          };
+      const name = isFirst && current ? current.name : getNextCabinetName([...remaining.parts, ...newParts]);
+      let built = buildSimpleCabinet({ ...input, name });
+      if (!current) built = applyQuickCabinetJoineryPreset(built, state.cabinetDraft);
+      built = applyGeneratedJoinery(built, state.jointRules);
+      if (!firstGroupId) firstGroupId = built[0]?.meta?.groupId ?? null;
+      newParts.push(...built);
+      offset += size;
+    });
+
     set({
-      history: applyProject(state.history, next),
-      selected: state.selected,
-      selectedPartIds: state.selectedPartIds,
-      selectedSection: { groupId, sectionId: targetSectionId, tierId: resolvedTierId ?? undefined },
+      history: applyProject(state.history, addParts(remaining, newParts)),
+      selected: firstGroupId ? { type: 'group', groupId: firstGroupId } : null,
+      selectedPartIds: [],
+      selectedSection: null,
+      selectedDrill: null,
       lastValidationErrors: [],
     });
   },
@@ -919,11 +1227,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (selection.type === 'group') {
       const module = getCabinetModuleState(state.history.present.parts, selection.groupId);
       if (module) {
-        const duplicateBase = buildSimpleCabinet({
-          ...module,
-          position: module.position,
-          layout: module.layout,
-        });
+        const { groupId: _originalGroupId, ...moduleDraft } = module;
+        const duplicateBase = applyGeneratedJoinery(buildSimpleCabinet({
+          ...moduleDraft,
+          name: getNextCabinetName(state.history.present.parts),
+        }), state.jointRules);
         const duplicated = findDuplicateDeltaX(
           state.history.present,
           state.history.present.parts.filter((part) => part.meta?.groupId === selection.groupId),
@@ -966,12 +1274,12 @@ export const useAppStore = create<AppState>((set, get) => ({
             && (!state.selectedSection?.tierId || section.tierId === state.selectedSection?.tierId)
         ) ?? null
       : null;
-    const fallbackTierSection = getLeafTierSections(current)[0] ?? null;
+    const fallbackTierSection = getDefaultTierSection(getLeafTierSections(current));
     const targetSectionId = targetSection?.id ?? fallbackTierSection?.id;
     if (!targetSectionId) return;
     const resolvedTierId = targetSection?.tierId ?? fallbackTierSection?.tierId ?? null;
     const { layout, partition } = addPartitionToLayoutSection(current, targetSectionId, resolvedTierId ?? undefined);
-    const replacement = applyGeneratedJoinery(rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }), state.jointRules);
+    const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }, state.jointRules);
     const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
     set({
       history: applyProject(state.history, next),
@@ -987,9 +1295,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!selection || selection.type === 'group') return;
     const selectedPart = findPart(state.history.present, selection.partId);
     if (!selectedPart) return;
-    if (selectedPart.meta?.role !== 'shelf' && selectedPart.meta?.role !== 'partition' && selectedPart.meta?.role !== 'tier-divider') {
+    if (selectedPart.meta?.role !== 'shelf' && selectedPart.meta?.role !== 'partition' && selectedPart.meta?.role !== 'tier-divider' && selectedPart.meta?.role !== 'drawer-column' && !getFrontSpecId(selectedPart)) {
       const removed = removePartWithDependentOperations(state.history.present, selectedPart.id);
-      const next = replaceParts(removed, applyGeneratedJoinery(removed.parts, state.jointRules));
+      const next = replaceParts(removed, regenerateJoineryForGroups(removed.parts, [selectedPart.meta?.groupId], state.jointRules));
       set({
         history: applyProject(state.history, next),
         selected: null,
@@ -1005,16 +1313,33 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!current) return;
     const layout = removeCabinetElementFromLayout(current, selectedPart);
     if (layout === current.layout) return;
-    const replacement = applyGeneratedJoinery(
-      rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }),
-      state.jointRules
-    );
+    const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, layout, shelfCount: layout.shelves.length, partitionCount: layout.partitions.length }, state.jointRules);
     const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
     set({
       history: applyProject(state.history, next),
       selected: { type: 'group', groupId },
       selectedPartIds: [],
       selectedSection: null,
+      lastValidationErrors: [],
+    });
+  },
+  removeGroup: (groupId) => {
+    const state = get();
+    const removed = removeGroupWithDependentOperations(state.history.present, groupId);
+    if (removed === state.history.present) return;
+    // No joinery pass: other cabinets don't depend on the removed one, its dependent ops were dropped above.
+    const next = removed;
+    const remainingIds = new Set(next.parts.map((part) => part.id));
+    const selection = state.selected;
+    const selectionRemoved = selection?.type === 'group' ? selection.groupId === groupId : Boolean(selection && !remainingIds.has(selection.partId));
+    const keepFace = (face: MeasuredFace | null) => (face && remainingIds.has(face.partId) ? face : null);
+    set({
+      history: applyProject(state.history, next),
+      selected: selectionRemoved ? null : selection,
+      selectedPartIds: state.selectedPartIds.filter((id) => remainingIds.has(id)),
+      selectedDrill: state.selectedDrill && remainingIds.has(state.selectedDrill.partId) ? state.selectedDrill : null,
+      selectedSection: state.selectedSection?.groupId === groupId ? null : state.selectedSection,
+      measuredFaces: [keepFace(state.measuredFaces[0]), keepFace(state.measuredFaces[1])],
       lastValidationErrors: [],
     });
   },
@@ -1027,10 +1352,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const nextSections = current.backPanelSections.includes(sectionKey)
         ? current.backPanelSections.filter((item) => item !== sectionKey)
         : [...current.backPanelSections, sectionKey];
-      const replacement = applyGeneratedJoinery(
-        rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, backPanelSections: nextSections }),
-        state.jointRules
-      );
+      const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, backPanelSections: nextSections }, state.jointRules);
       const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
       set({ history: applyProject(state.history, next), selected: { type: 'group', groupId }, selectedPartIds: [], selectedSection: state.selectedSection, lastValidationErrors: [] });
       return;
@@ -1049,44 +1371,76 @@ export const useAppStore = create<AppState>((set, get) => ({
     const nextSections = hasAllTierPanels
       ? current.backPanelSections.filter((key) => !tierKeys.includes(key))
       : [...new Set([...current.backPanelSections, ...tierKeys])];
-    const replacement = applyGeneratedJoinery(
-      rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, backPanelSections: nextSections }),
-      state.jointRules
-    );
+    const replacement = rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, backPanelSections: nextSections }, state.jointRules);
     const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
     set({ history: applyProject(state.history, next), selected: { type: 'group', groupId }, selectedPartIds: [], selectedSection: state.selectedSection, lastValidationErrors: [] });
   },
-  toggleFrontsForSelectedGroup: () => {
-    const state = get(); const groupId = state.selected?.type === 'group' ? state.selected.groupId : state.selected?.type === 'part' || state.selected?.type === 'face' ? findPart(state.history.present, state.selected.partId)?.meta?.groupId ?? null : null; if (!groupId) return;
-    const current = getCabinetModuleState(state.history.present.parts, groupId); if (!current) return;
-    const nextFrontCount = current.frontCount > 0 ? 0 : getAutoFrontCount(current.partitionCount);
-    get().updateCabinetModule(groupId, { frontCount: nextFrontCount });
+  selectOpening: (groupId, section, opening, extend = false) => set((state) => {
+    // One update: a separate setSelectedSection would drop the picked opening.
+    const sectionSelection = {
+      selected: { type: 'group' as const, groupId },
+      selectedPartIds: [] as string[],
+      selectedDrill: null,
+      selectedSection: { groupId, sectionId: section.sectionId, tierId: section.tierId, zoneId: section.zoneId ?? undefined },
+    };
+    if (!opening) return { ...sectionSelection, selectedOpening: null };
+    const ref: CabinetOpeningRef = {
+      tierId: opening.tierId,
+      sectionId: opening.sectionId,
+      bottomBoundaryId: opening.bottomBoundaryId,
+      topBoundaryId: opening.topBoundaryId,
+      ...(opening.topTierId ? { topTierId: opening.topTierId, topSectionId: opening.topSectionId } : {}),
+    };
+    const current = state.selectedOpening;
+    if (!extend || current?.groupId !== groupId) return { ...sectionSelection, selectedOpening: { groupId, ...ref } };
+    // Shift+click grows the picked opening to the clicked cell along its column, up or down, across tiers too;
+    // a cell outside the column starts a new pick.
+    const extended = extendOpeningRef(getCabinetOpenings(state.history.present.parts, groupId), current, ref);
+    return { ...sectionSelection, selectedOpening: { groupId, ...(extended ?? ref) } };
+  }),
+  setFrontOnSelectedOpening: (front) => {
+    const state = get();
+    const opening = state.selectedOpening;
+    if (!opening) return;
+    const layout = setFrontOnOpening(state.history.present.parts, opening.groupId, opening, front);
+    const next = layout ? rebuildGroupWithLayout(state, opening.groupId, layout) : null;
+    if (next) set({ history: applyProject(state.history, next), lastValidationErrors: [] });
   },
-  toggleFrontsForSelectedTier: () => {
-    const state = get(); const groupId = state.selected?.type === 'group' ? state.selected.groupId : state.selected?.type === 'part' || state.selected?.type === 'face' ? findPart(state.history.present, state.selected.partId)?.meta?.groupId ?? null : null; if (!groupId) return;
-    const current = getCabinetModuleState(state.history.present.parts, groupId); if (!current) return;
-    const selectedSection = state.selectedSection?.groupId === groupId ? state.selectedSection : null;
-    if (!selectedSection?.tierId) return;
-    const tierKey = selectedSection.sectionId && selectedSection.zoneId
-      ? `tier-front:${selectedSection.tierId}:${selectedSection.sectionId}:${selectedSection.zoneId}`
-      : `tier-front:${selectedSection.tierId}`;
-    const nextTierIds = current.frontTierIds.includes(tierKey)
-      ? current.frontTierIds.filter((item) => item !== tierKey)
-      : [...current.frontTierIds, tierKey];
-    const replacement = applyGeneratedJoinery(
-      rebuildCabinetGroup(state.history.present.parts, groupId, { ...current, frontTierIds: nextTierIds, frontType: current.frontCount > 0 ? 'double' : 'none' }),
-      state.jointRules
-    );
-    const next = replaceParts(state.history.present, replaceGroupParts(state.history.present.parts, groupId, replacement));
-    set({ history: applyProject(state.history, next), selected: { type: 'group', groupId }, selectedPartIds: [], selectedSection: state.selectedSection, lastValidationErrors: [] });
+  setFrontsOnAllOpenings: (groupId) => {
+    const state = get();
+    const layout = layoutWithFrontsOnAllOpenings(state.history.present.parts, groupId);
+    const next = layout ? rebuildGroupWithLayout(state, groupId, layout) : null;
+    if (next) set({ history: applyProject(state.history, next), lastValidationErrors: [] });
+  },
+  clearAllFronts: (groupId) => {
+    const state = get();
+    const current = getCabinetModuleState(state.history.present.parts, groupId);
+    const next = current ? rebuildGroupWithLayout(state, groupId, updateAllFronts(current.layout, () => [])) : null;
+    if (next) set({ history: applyProject(state.history, next), lastValidationErrors: [] });
   },
   undo: () => set((state) => ({ history: undo(state.history), lastValidationErrors: [] })),
   redo: () => set((state) => ({ history: redo(state.history), lastValidationErrors: [] })),
-  focusSelection: () => set((state) => ({ camera: { focusVersion: state.camera.focusVersion + 1, targetPartId: state.selected?.type === 'part' || state.selected?.type === 'face' ? state.selected.partId : null, targetGroupId: state.selected?.type === 'group' ? state.selected.groupId : null } })),
-  resetView: () => set((state) => ({ camera: { focusVersion: state.camera.focusVersion + 1, targetPartId: null, targetGroupId: null } })),
-  saveProgress: () => {
+  focusSelection: () => set((state) => ({ camera: { ...state.camera, focusVersion: state.camera.focusVersion + 1, targetPartId: state.selected?.type === 'part' || state.selected?.type === 'face' ? state.selected.partId : null, targetGroupId: state.selected?.type === 'group' ? state.selected.groupId : null } })),
+  resetView: () => set((state) => ({ camera: { ...state.camera, focusVersion: state.camera.focusVersion + 1, targetPartId: null, targetGroupId: null } })),
+  setCameraPreset: (preset) => set((state) => ({ camera: { ...state.camera, preset, presetVersion: state.camera.presetVersion + 1 } })),
+  setShowRoleColors: (enabled) => set({ showRoleColors: enabled }),
+  setMaterialColor: (color) => set({ materialColor: color }),
+  setPartsColor: (partIds, color) => {
     const state = get();
-    const result = trySaveProjectProgress(state.history.present);
+    const project = state.history.present;
+    const targetIds = new Set(partIds);
+    const updatedParts = project.parts.map((part) => {
+      if (!targetIds.has(part.id)) return part;
+      const nextMeta = { ...part.meta };
+      if (color) nextMeta.displayColor = color;
+      else delete nextMeta.displayColor;
+      return { ...part, meta: nextMeta };
+    });
+    const next = replaceParts(project, updatedParts);
+    set({ history: applyProject(state.history, next), lastValidationErrors: [] });
+  },
+  saveProgress: async () => {
+    const result = await saveProjectProgress(get().history.present);
     if (!result.ok) {
       set({ saveProgressMessage: result.error });
       return;
@@ -1094,8 +1448,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const savedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     set({ hasSavedProgress: true, saveProgressMessage: `Saved at ${savedAt}` });
   },
-  loadProgress: () => {
-    const saved = loadSavedProjectProgress();
+  loadProgress: async () => {
+    const saved = await loadSavedProjectProgress();
     if (!saved) return;
     set({
       history: createHistory(saved),
@@ -1113,7 +1467,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ saveProgressMessage: result.error });
       return;
     }
-    persistProjectProgress(result.project);
+    void saveProjectProgress(result.project);
     set({
       history: createHistory(result.project),
       selected: null,
@@ -1126,7 +1480,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   newProject: () => {
     const project = createProject('Furniture MVP');
-    persistProjectProgress(project);
+    void saveProjectProgress(project);
     set({
       history: createHistory(project),
       selected: null,
@@ -1137,9 +1491,99 @@ export const useAppStore = create<AppState>((set, get) => ({
       saveProgressMessage: 'New project created',
     });
   },
+  updateProjectName: (name) => {
+    const state = get();
+    const next = { ...state.history.present, name: name.trim() || state.history.present.name };
+    set({ history: applyProject(state.history, next) });
+  },
+  saveToSlot: async (slot) => {
+    try {
+      await saveSlotData(slot, get().history.present);
+    } catch {
+      set({ saveProgressMessage: 'Could not save slot: browser storage is unavailable or full' });
+    }
+  },
+  loadSlot: async (slot) => {
+    const project = await loadSlotData(slot);
+    if (!project) return;
+    void saveProjectProgress(project);
+    set({ history: createHistory(project), selected: null, selectedPartIds: [], selectedSection: null, lastValidationErrors: [], hasSavedProgress: true, saveProgressMessage: null });
+  },
+  deleteSlot: async (slot) => {
+    try {
+      await deleteSlotData(slot);
+    } catch {
+      set({ saveProgressMessage: 'Could not delete slot' });
+    }
+  },
+  hydrateSavedProject: (project) => set({ history: createHistory(project), hasSavedProgress: true }),
+  setSketchPanelOpen: (open) => set({ sketchPanelOpen: open }),
+  // Returning the same state object skips notifying subscribers when the hovered set is unchanged.
+  setHoveredPartIds: (partIds, source = 'tree') => set((state) => {
+    const hoverSource = partIds.length > 0 ? source : null;
+    const unchanged = state.hoverSource === hoverSource
+      && state.hoveredPartIds.length === partIds.length
+      && partIds.every((id, index) => state.hoveredPartIds[index] === id);
+    return unchanged ? state : { hoveredPartIds: partIds, hoverSource };
+  }),
+  setActiveSketch: (sketchId) => set({ activeSketchId: sketchId, sketchPanelOpen: true }),
+  addSketch: (sketch) => set((state) => {
+    const project = state.history.present;
+    const sketches = project.sketches ?? [];
+    const named = isGenericSketchName(sketch.name)
+      ? { ...sketch, name: nextSketchName(sketches, state.language === 'ru' ? 'Эскиз' : 'Sketch') }
+      : sketch;
+    const next = { ...project, sketches: [...sketches, named] };
+    return { history: applyProject(state.history, next), activeSketchId: named.id, sketchPanelOpen: true };
+  }),
+  renameSketch: (sketchId, name) => set((state) => {
+    const project = state.history.present;
+    const sketches = project.sketches ?? [];
+    const trimmed = name.trim();
+    const current = sketches.find((sketch) => sketch.id === sketchId);
+    if (!current || !trimmed || current.name === trimmed) return state;
+    const next = { ...project, sketches: sketches.map((sketch) => (sketch.id === sketchId ? { ...sketch, name: trimmed } : sketch)) };
+    return { history: applyProject(state.history, next) };
+  }),
+  removeSketch: (sketchId) => set((state) => {
+    const project = state.history.present;
+    const sketches = (project.sketches ?? []).filter((sketch) => sketch.id !== sketchId);
+    const activeSketchId = state.activeSketchId === sketchId ? sketches[0]?.id ?? null : state.activeSketchId;
+    return { history: applyProject(state.history, { ...project, sketches }), activeSketchId };
+  }),
 }));
 
 export function useProject(): Project { return useAppStore((s) => s.history.present); }
+
+/**
+ * Autosave: the current project goes to browser storage shortly after every change (and right away when the tab is
+ * hidden), so a crash or a closed tab loses at most a second or two. Started by main.tsx after the restore.
+ */
+const AUTOSAVE_DELAY_MS = 1200;
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+let autosaveStarted = false;
+
+async function flushAutosave() {
+  autosaveTimer = null;
+  const result = await saveProjectProgress(useAppStore.getState().history.present);
+  if (!result.ok) useAppStore.setState({ saveProgressMessage: result.error });
+  else if (!useAppStore.getState().hasSavedProgress) useAppStore.setState({ hasSavedProgress: true });
+}
+
+export function startAutosave() {
+  if (autosaveStarted) return;
+  autosaveStarted = true;
+  useAppStore.subscribe((state, previous) => {
+    if (state.history.present === previous.history.present) return;
+    if (autosaveTimer) clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => { void flushAutosave(); }, AUTOSAVE_DELAY_MS);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden' || !autosaveTimer) return;
+    clearTimeout(autosaveTimer);
+    void flushAutosave();
+  });
+}
 export function useSelectedPart() {
   return useAppStore((state) => {
     const sel = state.selected; const project = state.history.present; const partId = sel?.type === 'part' || sel?.type === 'face' ? sel.partId : null;
