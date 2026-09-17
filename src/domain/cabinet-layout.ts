@@ -97,6 +97,8 @@ export type CabinetDrawerBlockSpec = {
   fill?: boolean;
   /** Full-height panel inside the block, `gap` mm off one section wall: the drawers run on it past hinges, a wall or a door casing. */
   falsePanel?: DrawerFalsePanelSpec;
+  /** Drawers (fronts and boxes) set back from the carcass front, mm — e.g. behind a door put over them. Unset = 0. */
+  recess?: number;
 };
 
 export type DrawerFalsePanelSpec = {
@@ -106,6 +108,8 @@ export type DrawerFalsePanelSpec = {
 };
 
 export const DEFAULT_DRAWER_FALSE_PANEL_GAP = 20;
+/** Recess given to drawers that have none when a door is put over them. */
+export const DEFAULT_DRAWER_RECESS_BEHIND_DOOR = 20;
 
 export type DrawerBlockInput = {
   anchor: DrawerBlockAnchor;
@@ -119,6 +123,7 @@ export type DrawerBlockInput = {
   runnerLengthMode: DrawerRunnerLengthMode;
   fill?: boolean;
   falsePanel?: DrawerFalsePanelSpec;
+  recess?: number;
 };
 
 export const DEFAULT_DRAWER_SLOT_HEIGHT = 200;
@@ -944,6 +949,7 @@ export function upsertDrawerBlockInSection(
       columns: Math.max(1, Math.min(MAX_DRAWER_BLOCK_COLUMNS, Math.round(input.columns))),
       withBackPanel: input.withBackPanel,
       fill: Boolean(input.fill),
+      ...(input.recess ? { recess: Math.max(0, Math.round(input.recess)) } : {}),
       ...(input.falsePanel ? { falsePanel: { side: input.falsePanel.side, gap: Math.max(0, Math.round(input.falsePanel.gap)) } } : {}),
     },
   };
@@ -958,7 +964,7 @@ export function upsertDrawerBlockInSection(
   return { layout: withTierSpecs(tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: nextTierLayout } : tier)), drawerStack };
 }
 
-export function updateDrawerBlock(layout: CabinetLayout, drawerId: string, patch: Partial<Pick<CabinetDrawerBlockSpec, 'columns' | 'slotHeight' | 'withBackPanel' | 'offset' | 'fill' | 'falsePanel'>>): CabinetLayout {
+export function updateDrawerBlock(layout: CabinetLayout, drawerId: string, patch: Partial<Pick<CabinetDrawerBlockSpec, 'columns' | 'slotHeight' | 'withBackPanel' | 'offset' | 'fill' | 'falsePanel' | 'recess'>>): CabinetLayout {
   const tierIndex = findTierIndexByDrawerId(layout, drawerId);
   if (tierIndex < 0) return layout;
   const tiers = getTierSpecs(layout);

@@ -142,11 +142,13 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
             })
           );
         }
-        const effectiveRunnerLength = getEffectiveDrawerRunnerLength(drawerStack, depth);
+        // Recessed drawers (e.g. behind a door over them) move back as a whole; auto runners fit the depth that is left.
+        const drawerRecess = Math.max(0, drawerStack.block?.recess ?? 0);
+        const effectiveRunnerLength = getEffectiveDrawerRunnerLength(drawerStack, depth - drawerRecess);
         const drawerGeometry = getDrawerGeometry(columnWidth, zone.clearHeight, drawerStack.drawerCount, effectiveRunnerLength, options.frontOpeningMode);
         const boxBottomInset = 24;
         // An overlay drawer front sits in front of the carcass, so the box comes up to the carcass front edge.
-        const boxDepthCenterZ = position.z + depth / 2 - drawerGeometry.boxDepth / 2 - (frontMode === 'overlay' ? 0 : DRAWER_BOX_BACK_OFFSET);
+        const boxDepthCenterZ = position.z + depth / 2 - drawerRecess - drawerGeometry.boxDepth / 2 - (frontMode === 'overlay' ? 0 : DRAWER_BOX_BACK_OFFSET);
         // Overlay drawer fronts: each column of the block's zone is an opening (same gap rules as doors), its drawers share its height.
         // Between drawer fronts the gap is the doors' middle gap (26163 pencil: 4 between drawer fronts, as between doors).
         const overlayFacadeGap = options.frontOpeningMode === 'handles' ? HANDLED_FRONT_GAP : OVERLAY_FRONT_MIDDLE_GAP;
@@ -178,7 +180,7 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
           // Whole millimetres from the bottom up: the gaps stay exact and the remainder goes under the top edge.
           const height = Math.max(40, roundDownToMillimeter((rect.top - rect.bottom - overlayFacadeGap * (count - 1)) / count));
           const bottom = rect.bottom + stackIndexFromBottom * (height + overlayFacadeGap);
-          return { width: rect.right - rect.left, height, position: { x: (rect.left + rect.right) / 2, y: bottom + height / 2, z: rect.z } };
+          return { width: rect.right - rect.left, height, position: { x: (rect.left + rect.right) / 2, y: bottom + height / 2, z: rect.z - drawerRecess } };
         };
         const totalFacadeHeight = drawerGeometry.facadeHeight * drawerStack.drawerCount;
         const bottomFacadeGap = options.frontOpeningMode === 'handles' ? HANDLED_FRONT_GAP : DRAWER_BOTTOM_FACADE_MIN_CLEARANCE;
@@ -207,7 +209,7 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
           const backWallCenterY = frontWallCenterY + DRAWER_BACK_LIFT;
           const sideBottomY = boxBottomY - DRAWER_SIDE_BOTTOM_OVERHANG;
           const bottomCenterY = boxBottomY + thickness / 2;
-          const frontFaceZ = position.z + depth / 2 - thickness / 2;
+          const frontFaceZ = position.z + depth / 2 - thickness / 2 - drawerRecess;
           const boxCenterX = position.x + columnCenterX;
           // Column 0 keeps the legacy source ids so existing drawers keep their identity.
           const drawerSourceBase = column === 0 ? `${drawerStack.id}:${idx}` : `${drawerStack.id}:c${column}:${idx}`;

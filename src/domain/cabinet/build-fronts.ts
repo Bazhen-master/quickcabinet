@@ -15,7 +15,7 @@ export function getFloorClearance(options: { withPlinth: boolean; plinthKind: st
 
 export function buildFrontParts(ctx: CabinetBuildContext & CabinetCarcass, parts: Part[]) {
   const { depth, frontMode, groupId, layout, name, options, position, resolved, thickness, tierFrames, topFrontOverhang } = ctx;
-  // Fronts go over the openings they name (a tall one may span tiers); one whose boundary is gone or that now holds drawers is dropped.
+  // Fronts go over the openings they name (a tall one may span tiers, or cover drawers); one whose boundary is gone is dropped.
   const frontOpenings = resolved.flatMap((tierResolved, tierIndex) => {
     const frame = tierFrames.find((item) => item.tierId === tierResolved.tierId) ?? tierFrames[tierIndex];
     return frame
@@ -26,7 +26,7 @@ export function buildFrontParts(ctx: CabinetBuildContext & CabinetCarcass, parts
   getCabinetTierSpecs(layout).forEach((tier) => {
     (tier.layout.fronts ?? []).forEach((spec) => {
       const range = getOpeningRange(frontOpenings, { ...spec, tierId: tier.id });
-      if (!range || range.cells.slice(range.from, range.to + 1).some((cell) => cell.hasDrawers)) return;
+      if (!range) return;
       parts.push(...createOpeningFrontParts(spec, range.cells[range.from]!, range.cells[range.to]!, {
         name,
         groupId,

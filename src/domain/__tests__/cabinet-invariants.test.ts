@@ -404,11 +404,25 @@ describe('fronts', () => {
     expect(front.position.x + front.width / 2).toBeLessThanOrEqual(cell.endX);
   });
 
-  it('drawer cells take no front, and removing a bounding shelf drops the front', () => {
-    const withBlock = addBlock(createCabinet({ partitionCount: 0 }), 0, { drawerCount: 2 });
-    const drawerCell = openingsOf(withBlock).find((cell) => cell.hasDrawers);
-    expect(drawerCell).toBeDefined();
-    expect(setFrontOnOpening(withBlock, groupOf(withBlock), drawerCell!, { kind: 'door', hinge: 'left' })).toBeNull();
+  it('a door may cover drawers: they get set back behind it; removing a bounding shelf drops a front', () => {
+    for (const frontMode of ['inset', 'overlay'] as const) {
+      const withBlock = addBlock(createCabinet({ partitionCount: 0, frontMode }), 0, { drawerCount: 2 });
+      const drawerCell = openingsOf(withBlock).find((cell) => cell.hasDrawers);
+      expect(drawerCell).toBeDefined();
+      const layout = setFrontOnOpening(withBlock, groupOf(withBlock), drawerCell!, { kind: 'door', hinge: 'left' });
+      expect(layout).not.toBeNull();
+      const covered = rebuildWith(withBlock, layout!);
+      const [door] = frontParts(covered);
+      expect(door, frontMode).toBeDefined();
+      const doorBack = door!.position.z - door!.thickness / 2;
+      const hits = covered
+        .filter((part) => part.meta?.role?.startsWith('drawer-') && part.meta.role !== 'drawer-false-panel')
+        .filter((part) => boundsIntersect(getBounds([part]), getBounds([door!])))
+        .map((part) => part.name);
+      expect(hits, frontMode).toEqual([]);
+      for (const drawerFront of byRole(covered, 'drawer-front')) expect(drawerFront.position.z + drawerFront.thickness / 2).toBeLessThanOrEqual(doorBack + 0.001);
+      expect(partsWithDrillConflicts(covered)).toEqual([]);
+    }
 
     const base = createCabinet({ partitionCount: 0, shelfCount: 1 });
     const withDoor = withFront(base, openingsOf(base)[0]!, { kind: 'door', hinge: 'left' });

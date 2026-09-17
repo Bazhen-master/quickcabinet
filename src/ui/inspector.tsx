@@ -633,7 +633,6 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
     () => moduleState ? activeTierSections.map((section) => Math.round(getLeafSectionInnerSpan(moduleState, section).width)) : [],
     [activeTierSections, moduleState]
   );
-  const activeAutoDrawerRunnerLength = getAutoDrawerRunnerLength(moduleState?.depth ?? cabinetDraft.depth);
   const [drawerBlockAnchor, setDrawerBlockAnchor] = useState<DrawerBlockAnchor>('bottom');
   const [drawerBlockDraft, setDrawerBlockDraft] = useState({
     offset: 0,
@@ -643,6 +642,7 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
     withBackPanel: true,
     fill: false,
     falsePanel: null as DrawerFalsePanelSpec | null,
+    recess: 0,
     runnerLengthMode: 'auto' as DrawerRunnerLengthMode,
     runnerLength: 450 as DrawerRunnerLength,
   });
@@ -662,10 +662,12 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
         withBackPanel: activeDrawerBlock.block.withBackPanel,
         fill: Boolean(activeDrawerBlock.block.fill),
         falsePanel: activeDrawerBlock.block.falsePanel ?? null,
+        recess: activeDrawerBlock.block.recess ?? 0,
         runnerLengthMode: activeDrawerBlock.runnerLengthMode ?? 'manual',
         runnerLength: activeDrawerBlock.runnerLength,
       }
     : drawerBlockDraft;
+  const activeAutoDrawerRunnerLength = getAutoDrawerRunnerLength((moduleState?.depth ?? cabinetDraft.depth) - drawerBlockValues.recess);
   const drawerNicheSpan = drawerBlockValues.offset > 0 ? drawerBlockValues.offset + (moduleState?.thickness ?? 16) : 0;
   // A full-height block has no inner divider and no drawer height of its own: only the minimum drawer height limits it.
   const maxBlockDrawerCount = activeSection && moduleState
@@ -687,6 +689,7 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
     withBackPanel: values.withBackPanel,
     fill: values.fill,
     falsePanel: values.falsePanel ?? undefined,
+    recess: values.recess,
     runnerType: 'hidden-unihoper',
     runnerLengthMode: values.runnerLengthMode,
     runnerLength: values.runnerLengthMode === 'auto' ? activeAutoDrawerRunnerLength : values.runnerLength,
@@ -1588,6 +1591,13 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
                   <input type="checkbox" checked={drawerBlockValues.withBackPanel} onChange={(e) => updateDrawerBlockField({ withBackPanel: e.target.checked })} />
                   {language === 'ru' ? 'Задняя стенка блока' : 'Block back panel'}
                 </label>
+                <div style={{ marginTop: 8 }}>
+                  <NumberField
+                    label={t(language, 'drawerRecess')}
+                    value={drawerBlockValues.recess}
+                    onChange={(value) => updateDrawerBlockField({ recess: Math.max(0, Math.min(200, Math.round(value))) })}
+                  />
+                </div>
                 <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, marginTop: 8 }}>
                   <input
                     type="checkbox"

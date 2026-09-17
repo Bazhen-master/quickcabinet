@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { addDrillToPart, addDrillsToPart, addPart, addParts, createProject, getDrillGroupToken, moveDrillGroup, movePartsWithDependentOperations, removeGroupWithDependentOperations, removePartWithDependentOperations, replaceParts, updatePart, type Project } from '../domain/project';
 import { isGenericSketchName, nextSketchName, type ProjectSketch } from '../domain/sketch';
 import { loadSavedProjectProgress, openProjectFromFile, saveProjectProgress, saveToSlot as saveSlotData, loadFromSlot as loadSlotData, deleteSaveSlot as deleteSlotData } from '../infra/save-load';
-import { addPartitionToLayoutSection, addShelfToLayoutSection, buildSimpleCabinet, getCabinetModuleState, getCabinetOpenings, getDefaultTierSection, getFrontSpecId, getDrawerStackForSection, getLeafSectionInnerSpan, getLeafSections, getLeafTierSections, getLocalZonesForSection, extendOpeningRef, getOpeningRange, rebuildCabinetGroup, removeCabinetElementFromLayout, replaceGroupParts, setFrontHingeInLayout, setFrontOnOpening, setFrontsOnAllOpenings as layoutWithFrontsOnAllOpenings, updateCabinetSectionWidths, updateCabinetTierHeight, updateLocalTierDividerLayout, updateTierDividerLayout, type CabinetBackPanelKind, type CabinetPlinthKind, type CabinetFrontMode, type CabinetFrontOpeningMode, type CabinetModuleState, type CabinetOpeningRef, type CabinetTopMode } from '../domain/cabinet-builder';
+import { addPartitionToLayoutSection, addShelfToLayoutSection, buildSimpleCabinet, getCabinetModuleState, getCabinetOpenings, getDefaultTierSection, getFrontSpecId, getDrawerStackForSection, getLeafSectionInnerSpan, getLeafSections, getLeafTierSections, getLocalZonesForSection, extendOpeningRef, rebuildCabinetGroup, removeCabinetElementFromLayout, replaceGroupParts, setFrontHingeInLayout, setFrontOnOpening, setFrontsOnAllOpenings as layoutWithFrontsOnAllOpenings, updateCabinetSectionWidths, updateCabinetTierHeight, updateLocalTierDividerLayout, updateTierDividerLayout, type CabinetBackPanelKind, type CabinetPlinthKind, type CabinetFrontMode, type CabinetFrontOpeningMode, type CabinetModuleState, type CabinetOpeningRef, type CabinetTopMode } from '../domain/cabinet-builder';
 import { createCabinetLayout, getCabinetTierSpecs, removeDrawerStack, setShelfElevations, setShelfApron as setShelfApronInLayout, updateAllFronts, upsertDrawerBlockInSection, type CabinetFrontHinge, type CabinetFrontKind, type CabinetLayout, type DrawerBlockAnchor, type DrawerBlockInput, type DrawerRunnerLength, type DrawerRunnerLengthMode, type DrawerRunnerType } from '../domain/cabinet-layout';
 import { clampPartSize, createPanelPart, roundDownToMillimeter, type Part, type PartFace } from '../domain/part';
 import { createDrillOperation, getFaceAxis, type DrillOperation } from '../domain/drill';
@@ -1414,8 +1414,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedDrill: null,
       selectedSection: { groupId, sectionId: section.sectionId, tierId: section.tierId, zoneId: section.zoneId ?? undefined },
     };
-    // Shift+click on a drawer cell keeps the picked opening: no front goes over drawers.
-    if (!opening) return extend && state.selectedOpening?.groupId === groupId ? {} : { ...sectionSelection, selectedOpening: null };
+    if (!opening) return { ...sectionSelection, selectedOpening: null };
     const ref: CabinetOpeningRef = {
       tierId: opening.tierId,
       sectionId: opening.sectionId,
@@ -1427,11 +1426,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!extend || current?.groupId !== groupId) return { ...sectionSelection, selectedOpening: { groupId, ...ref } };
     // Shift+click grows the picked opening to the clicked cell along its column, up or down, across tiers too;
     // a cell outside the column starts a new pick.
-    const openings = getCabinetOpenings(state.history.present.parts, groupId);
-    const extended = extendOpeningRef(openings, current, ref);
-    // Growing over drawers would give an opening no front can take (the front buttons would do nothing): keep the pick.
-    const extendedRange = extended ? getOpeningRange(openings, extended) : null;
-    if (extendedRange?.cells.slice(extendedRange.from, extendedRange.to + 1).some((cell) => cell.hasDrawers)) return {};
+    const extended = extendOpeningRef(getCabinetOpenings(state.history.present.parts, groupId), current, ref);
     return { ...sectionSelection, selectedOpening: { groupId, ...(extended ?? ref) } };
   }),
   setFrontOnSelectedOpening: (front) => {

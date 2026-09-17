@@ -624,8 +624,8 @@ function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; p
           && (!selectedSection.zoneId || selectedSection.zoneId === zoneId);
         const isHovered = hoveredKey === key;
         const color = inOpening || sectionActive ? '#f59e0b' : isHovered ? '#60a5fa' : '#94a3b8';
-        // The front tool lights every opening up; drawer cells stay dim since no front goes there.
-        const idleOpacity = placingFronts ? (hasDrawers ? 0.04 : 0.12) : 0.06;
+        // The front tool lights every opening up; drawer cells are a little dimmer (a door may still cover them).
+        const idleOpacity = placingFronts ? (hasDrawers ? 0.08 : 0.12) : 0.06;
         const opacity = inOpening ? 0.38 : isHovered ? 0.2 : sectionActive ? 0.12 : pickedCells.length > 0 ? idleOpacity / 2 : idleOpacity;
         const width = Math.max(bottom.endX - bottom.startX, 8);
         const height = Math.max(top.endY - bottom.startY, 8);
@@ -649,7 +649,7 @@ function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; p
                 selectOpening(
                   moduleState.groupId,
                   { sectionId: bottom.sectionId, tierId: bottom.tierId, zoneId },
-                  hasDrawers ? null : ref,
+                  ref,
                   e.nativeEvent.shiftKey
                 );
               }}

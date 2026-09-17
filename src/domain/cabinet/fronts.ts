@@ -1,5 +1,5 @@
 // Проёмы и фасады: ячейки между границами, размещение фасадов, тип петли.
-import { type CabinetSection, getSectionInnerSpan, OPENING_EDGE_BOTTOM, OPENING_EDGE_TOP, getCabinetTierSpecs, type CabinetFrontHinge, type CabinetFrontSpec, type CabinetLayout, resolveCabinetTierLayouts, updateAllFronts, type CabinetFrontKind } from '../cabinet-layout';
+import { type CabinetSection, getSectionInnerSpan, OPENING_EDGE_BOTTOM, OPENING_EDGE_TOP, getCabinetTierSpecs, type CabinetFrontHinge, type CabinetFrontSpec, type CabinetLayout, resolveCabinetTierLayouts, updateAllFronts, updateDrawerBlock, DEFAULT_DRAWER_RECESS_BEHIND_DOOR, type CabinetFrontKind } from '../cabinet-layout';
 import { type Part, type PartRole, createPanelPart } from '../part';
 import { createId } from '../../shared/ids';
 import { roleLabel } from './common';
@@ -315,10 +315,20 @@ export function setFrontOnOpening(parts: Part[], groupId: string, ref: CabinetOp
   const target = getOpeningRange(openings, ref);
   if (!target) return null;
   const targetCells = target.cells.slice(target.from, target.to + 1);
-  if (front && targetCells.some((cell) => cell.hasDrawers)) return null;
   const bottom = targetCells[0]!;
   const { tierId: frontTierId, ...openingRef } = toOpeningRef(bottom, targetCells[targetCells.length - 1]!);
-  return updateAllFronts(module.layout, (fronts, tierId) => [
+  // A door over drawers: drawers that were never set back go back by the default recess, so their fronts clear the door.
+  let layout = module.layout;
+  if (front) {
+    const drawerFronts = parts.filter((part) => part.meta?.groupId === groupId && part.meta?.role === 'drawer-front');
+    getCabinetTierSpecs(layout).flatMap((tier) => tier.layout.drawers ?? []).forEach((stack) => {
+      if (!stack.block || stack.block.recess !== undefined) return;
+      const covered = drawerFronts.some((part) => (part.meta?.sourceId ?? '').startsWith(`${stack.id}:`)
+        && targetCells.some((cell) => cell.hasDrawers && part.position.x > cell.startX && part.position.x < cell.endX && part.position.y > cell.startY && part.position.y < cell.endY));
+      if (covered) layout = updateDrawerBlock(layout, stack.id, { recess: DEFAULT_DRAWER_RECESS_BEHIND_DOOR });
+    });
+  }
+  return updateAllFronts(layout, (fronts, tierId) => [
     ...fronts.filter((spec) => {
       const range = getOpeningRange(openings, { ...spec, tierId });
       // A front whose boundary is gone is dropped along the way.
