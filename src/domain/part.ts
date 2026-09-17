@@ -20,6 +20,7 @@ export type PartRole =
   | 'drawer-inner-front'
   | 'drawer-bottom'
   | 'drawer-column'
+  | 'drawer-false-panel'
   | 'tier-divider'
   | 'partition'
   | 'apron'

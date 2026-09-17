@@ -23,6 +23,7 @@ export function roleLabel(role: string, index?: number) {
     case 'drawer-inner-front': return `Drawer inner front ${index ?? 1}`;
     case 'drawer-bottom': return `Drawer bottom ${index ?? 1}`;
     case 'drawer-column': return `Drawer column divider ${index ?? 1}`;
+    case 'drawer-false-panel': return `Drawer false panel ${index ?? 1}`;
     case 'partition': return `Partition ${index ?? 1}`;
     case 'apron': return `Apron ${index ?? 1}`;
     case 'back-rail': return `Back rail ${index ?? 1}`;

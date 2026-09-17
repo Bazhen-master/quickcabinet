@@ -4,7 +4,7 @@ import { isDrillOperation } from '../domain/drill';
 import { useAppStore, useProject } from '../app/store';
 import { IconEye, IconTrash, ProjectTree } from './project-tree';
 import { DRAWER_RUNNER_LENGTHS, getAutoDrawerRunnerLength, getCabinetModuleState, getCabinetOpenings, getDefaultTierSection, getDrawerBlockFacadeHeight, getLeafSectionInnerSpan, getLeafTierSections, getLocalZonesForSection, getOpeningRange, type CabinetBackPanelKind, type CabinetPlinthKind } from '../domain/cabinet-builder';
-import { DEFAULT_DRAWER_SLOT_HEIGHT, MAX_DRAWER_BLOCK_COLUMNS, MIN_DRAWER_SLOT_HEIGHT, getCabinetTierSpecs, type CabinetFrontHinge, type CabinetFrontKind, type DrawerBlockAnchor, type DrawerRunnerLength, type DrawerRunnerLengthMode, type DrawerRunnerType } from '../domain/cabinet-layout';
+import { DEFAULT_DRAWER_FALSE_PANEL_GAP, DEFAULT_DRAWER_SLOT_HEIGHT, MAX_DRAWER_BLOCK_COLUMNS, MIN_DRAWER_SLOT_HEIGHT, getCabinetTierSpecs, type CabinetFrontHinge, type CabinetFrontKind, type DrawerBlockAnchor, type DrawerRunnerLength, type DrawerRunnerLengthMode, type DrawerRunnerType, type DrawerFalsePanelSpec } from '../domain/cabinet-layout';
 import { buildSnapCandidates, formatBoundsSize, getBounds, type RelativePlacementRule } from '../domain/geometry';
 import { createEmptySideJoinery, type JoineryType } from '../domain/joinery';
 import { t, type Lang } from '../i18n';
@@ -436,6 +436,7 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
   const themeMode = useAppStore((s) => s.themeMode);
   const isDarkBlue = themeMode === 'dark-blue';
   const experimentalMoveMode = useAppStore((s) => s.experimentalMoveMode);
+  const kitchenMode = useAppStore((s) => s.kitchenMode);
   const showDrilling = useAppStore((s) => s.showDrilling);
   const xrayMode = useAppStore((s) => s.xrayMode);
   const materialColor = useAppStore((s) => s.materialColor);
@@ -641,6 +642,7 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
     slotHeight: DEFAULT_DRAWER_SLOT_HEIGHT,
     withBackPanel: true,
     fill: false,
+    falsePanel: null as DrawerFalsePanelSpec | null,
     runnerLengthMode: 'auto' as DrawerRunnerLengthMode,
     runnerLength: 450 as DrawerRunnerLength,
   });
@@ -659,6 +661,7 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
         slotHeight: activeDrawerBlock.block.slotHeight,
         withBackPanel: activeDrawerBlock.block.withBackPanel,
         fill: Boolean(activeDrawerBlock.block.fill),
+        falsePanel: activeDrawerBlock.block.falsePanel ?? null,
         runnerLengthMode: activeDrawerBlock.runnerLengthMode ?? 'manual',
         runnerLength: activeDrawerBlock.runnerLength,
       }
@@ -683,10 +686,20 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
     slotHeight: values.slotHeight,
     withBackPanel: values.withBackPanel,
     fill: values.fill,
+    falsePanel: values.falsePanel ?? undefined,
     runnerType: 'hidden-unihoper',
     runnerLengthMode: values.runnerLengthMode,
     runnerLength: values.runnerLengthMode === 'auto' ? activeAutoDrawerRunnerLength : values.runnerLength,
   });
+  // The built false panel carries its fastening (rebuilds keep it); a new panel goes to the side the section's door hinges on.
+  const drawerFalsePanelPart = activeDrawerBlock
+    ? project.parts.find((part) => part.meta?.groupId === moduleState?.groupId && part.meta?.role === 'drawer-false-panel' && part.meta.sourceId === `${activeDrawerBlock.id}:false-panel`) ?? null
+    : null;
+  const sectionDoorHinge = moduleState && activeSection
+    ? getCabinetTierSpecs(moduleState.layout)
+      .flatMap((tier) => tier.layout.fronts ?? [])
+      .find((front) => front.kind === 'door' && (front.sectionId === activeSection.id || front.topSectionId === activeSection.id))?.hinge
+    : undefined;
   const updateDrawerBlockField = (patch: Partial<typeof drawerBlockDraft>) => {
     const next = { ...drawerBlockValues, ...patch };
     if (activeDrawerBlock) commitDrawerBlock(next);
@@ -1140,7 +1153,7 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
                   ) : null}
                 </div>
               ) : null}
-              {selectedPart.meta?.role === 'partition' || selectedPart.meta?.role === 'drawer-column' ? (
+              {selectedPart.meta?.role === 'partition' || selectedPart.meta?.role === 'drawer-column' || selectedPart.meta?.role === 'drawer-false-panel' ? (
                 <div style={{ marginBottom: 12 }}>
                   <div style={sectionHeadingStyle}>{t(language, 'connections')}</div>
                   <div style={{ display: 'grid', gap: 10, gridTemplateColumns: '1fr 1fr' }}>
@@ -1360,9 +1373,9 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
                 ) : null}
                 <OptionRow label={t(language, 'plinth')} checked={moduleState.withPlinth} onChange={() => updateCabinetModule(moduleState.groupId, { withPlinth: !moduleState.withPlinth })}>
                   {moduleState.withPlinth ? <NumberField ariaLabel={t(language, 'plinthHeight')} value={moduleState.plinthHeight} onChange={(value) => updateCabinetModule(moduleState.groupId, { plinthHeight: value })} /> : null}
-                  {moduleState.withPlinth ? <PlinthKindSelect language={language} value={moduleState.plinthKind} onChange={(plinthKind) => updateCabinetModule(moduleState.groupId, { plinthKind })} style={selectControlStyle} optionStyle={optionStyle} /> : null}
+                  {moduleState.withPlinth && (kitchenMode || moduleState.plinthKind === 'kitchen') ? <PlinthKindSelect language={language} value={moduleState.plinthKind} onChange={(plinthKind) => updateCabinetModule(moduleState.groupId, { plinthKind })} style={selectControlStyle} optionStyle={optionStyle} /> : null}
                 </OptionRow>
-                <BackRailElevationsField language={language} value={moduleState.backRailElevations} onChange={(backRailElevations) => updateCabinetModule(moduleState.groupId, { backRailElevations })} style={selectControlStyle} />
+                {kitchenMode || moduleState.backRailElevations.length > 0 ? <BackRailElevationsField language={language} value={moduleState.backRailElevations} onChange={(backRailElevations) => updateCabinetModule(moduleState.groupId, { backRailElevations })} style={selectControlStyle} /> : null}
                 <OptionRow label={t(language, 'topDecorRails')} checked={moduleState.withTopRails} onChange={() => updateCabinetModule(moduleState.groupId, { withTopRails: !moduleState.withTopRails })}>
                   {moduleState.withTopRails ? <NumberField ariaLabel={t(language, 'topRailHeight')} value={moduleState.topRailHeight} onChange={(value) => updateCabinetModule(moduleState.groupId, { topRailHeight: value })} /> : null}
                 </OptionRow>
@@ -1575,6 +1588,52 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
                   <input type="checkbox" checked={drawerBlockValues.withBackPanel} onChange={(e) => updateDrawerBlockField({ withBackPanel: e.target.checked })} />
                   {language === 'ru' ? 'Задняя стенка блока' : 'Block back panel'}
                 </label>
+                <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, marginTop: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(drawerBlockValues.falsePanel)}
+                    onChange={(e) => updateDrawerBlockField({
+                      falsePanel: e.target.checked ? { side: sectionDoorHinge === 'right' ? 'right' : 'left', gap: DEFAULT_DRAWER_FALSE_PANEL_GAP } : null,
+                    })}
+                  />
+                  {t(language, 'drawerFalsePanel')}
+                </label>
+                {drawerBlockValues.falsePanel ? (
+                  <>
+                    <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', marginTop: 8 }}>
+                      <label>
+                        <div style={fieldLabelStyle}>{t(language, 'drawerFalsePanelSide')}</div>
+                        <select
+                          value={drawerBlockValues.falsePanel.side}
+                          onChange={(e) => updateDrawerBlockField({ falsePanel: { ...drawerBlockValues.falsePanel!, side: e.target.value as DrawerFalsePanelSpec['side'] } })}
+                          style={selectControlStyle}
+                        >
+                          <option style={optionStyle} value="left">{t(language, 'left')}</option>
+                          <option style={optionStyle} value="right">{t(language, 'right')}</option>
+                        </select>
+                      </label>
+                      <NumberField
+                        label={t(language, 'drawerFalsePanelGap')}
+                        value={drawerBlockValues.falsePanel.gap}
+                        onChange={(value) => updateDrawerBlockField({ falsePanel: { ...drawerBlockValues.falsePanel!, gap: Math.max(0, Math.min(300, Math.round(value))) } })}
+                      />
+                    </div>
+                    {drawerFalsePanelPart ? (
+                      <label style={{ display: 'block', marginTop: 8 }}>
+                        <div style={fieldLabelStyle}>{t(language, 'drawerFalsePanelFastening')}</div>
+                        <select
+                          value={drawerFalsePanelPart.meta?.joinery?.top === 'rafix' ? 'rafix' : 'confirmat'}
+                          onChange={(e) => updatePartJoinery(drawerFalsePanelPart.id, { top: e.target.value as JoineryType, bottom: e.target.value as JoineryType })}
+                          style={selectControlStyle}
+                        >
+                          <option style={optionStyle} value="confirmat">{t(language, 'joineryConfirmat')}</option>
+                          <option style={optionStyle} value="rafix">{t(language, 'joineryRafix')}</option>
+                        </select>
+                      </label>
+                    ) : null}
+                    <div style={{ ...hintStyle, marginTop: 6, marginBottom: 0 }}>{t(language, 'drawerFalsePanelHint')}</div>
+                  </>
+                ) : null}
                 <div style={{ ...hintStyle, marginTop: 8, marginBottom: 0 }}>
                   {/* A built block shows its real front height (overlay fronts reach over the panels); a draft uses the formula. */}
                   {`${t(language, 'drawerFrontHeight')}: ${Math.round(
@@ -1703,9 +1762,9 @@ export function Inspector({ uiScale = 1, anchorRequest, onAnchorHandled, onActiv
             ) : null}
             <OptionRow label={t(language, 'plinth')} checked={cabinetDraft.withPlinth} onChange={() => updateCabinetDraft({ withPlinth: !cabinetDraft.withPlinth })}>
               {cabinetDraft.withPlinth ? <NumberField ariaLabel={t(language, 'plinthHeight')} value={cabinetDraft.plinthHeight} onChange={(value) => updateCabinetDraft({ plinthHeight: value })} /> : null}
-              {cabinetDraft.withPlinth ? <PlinthKindSelect language={language} value={cabinetDraft.plinthKind} onChange={(plinthKind) => updateCabinetDraft({ plinthKind })} style={selectControlStyle} optionStyle={optionStyle} /> : null}
+              {cabinetDraft.withPlinth && (kitchenMode || cabinetDraft.plinthKind === 'kitchen') ? <PlinthKindSelect language={language} value={cabinetDraft.plinthKind} onChange={(plinthKind) => updateCabinetDraft({ plinthKind })} style={selectControlStyle} optionStyle={optionStyle} /> : null}
             </OptionRow>
-            <BackRailElevationsField language={language} value={cabinetDraft.backRailElevations} onChange={(backRailElevations) => updateCabinetDraft({ backRailElevations })} style={selectControlStyle} />
+            {kitchenMode || cabinetDraft.backRailElevations.length > 0 ? <BackRailElevationsField language={language} value={cabinetDraft.backRailElevations} onChange={(backRailElevations) => updateCabinetDraft({ backRailElevations })} style={selectControlStyle} /> : null}
             <OptionRow label={t(language, 'topDecorRails')} checked={cabinetDraft.withTopRails} onChange={() => updateCabinetDraft({ withTopRails: !cabinetDraft.withTopRails })}>
               {cabinetDraft.withTopRails ? <NumberField ariaLabel={t(language, 'topRailHeight')} value={cabinetDraft.topRailHeight} onChange={(value) => updateCabinetDraft({ topRailHeight: value })} /> : null}
             </OptionRow>

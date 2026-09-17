@@ -14,6 +14,7 @@ import { getFaceAxis, isDrillOperation, isGrooveOperation, type DrillOperation }
 import { getFacePointWorld } from '../domain/face-coords';
 import { t } from '../i18n';
 import { getLocalizedPartName } from '../domain/part-label';
+import { ShelfDragController, startShelfDrag } from './shelf-drag';
 
 function getFaceFrame(part: Part, face: PartFace) {
   switch (face) {
@@ -429,7 +430,8 @@ const PartMesh = memo(function PartMesh({ part }: { part: Part }) {
   return (
     <group
       position={[part.position.x, part.position.y, part.position.z]}
-      // On the group, not the box: face layers and drill markers sit in front of the box and would swallow the hover.
+      // On the group, not the box: face layers and drill markers sit in front of the box and would swallow the hover (and the drag).
+      onPointerDown={(e) => { if (startShelfDrag(part, e.nativeEvent)) e.stopPropagation(); }}
       onPointerOver={(e) => { e.stopPropagation(); useAppStore.getState().setHoveredPartIds([part.id], 'scene'); }}
       onPointerOut={(e) => {
         e.stopPropagation();
@@ -466,7 +468,7 @@ const PartMesh = memo(function PartMesh({ part }: { part: Part }) {
       <FaceLayer part={part} face="right" position={[part.width / 2 + 0.6, 0, 0]} rotation={[0, -Math.PI / 2, 0]} size={[part.thickness, part.height]} />
       {showSingleLabel && (
         <Html position={[0, part.height / 2 + 22, 0]} center>
-          <div style={{ fontSize: 12, background: isDarkBlue ? 'rgba(36,36,39,0.94)' : 'rgba(255,255,255,0.92)', color: isDarkBlue ? '#f4f4f5' : '#111', padding: '3px 7px 4px', borderRadius: 6, border: `1px solid ${isDarkBlue ? '#52525b' : '#ddd'}`, whiteSpace: 'nowrap', lineHeight: 1.4 }}>
+          <div style={{ fontSize: 12, background: isDarkBlue ? 'rgba(36,36,39,0.94)' : 'rgba(255,255,255,0.92)', color: isDarkBlue ? '#f4f4f5' : '#111', padding: '3px 7px 4px', borderRadius: 6, border: `1px solid ${isDarkBlue ? '#52525b' : '#ddd'}`, whiteSpace: 'nowrap', lineHeight: 1.4, pointerEvents: 'none' }}>
             <div style={{ fontWeight: 600 }}>{getLocalizedPartName(part, language)}</div>
             <div style={{ fontSize: 10, color: isDarkBlue ? '#a1a1aa' : '#78716c' }}>{part.width}×{part.height}×{part.thickness} мм</div>
           </div>
@@ -614,7 +616,8 @@ function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; p
     <>
       {overlays.map(({ key, cells, bottom, top, ref, isFront, hasDrawers, sectionIndex, zoneId }) => {
         const inOpening = cells.some((cell) => pickedCells.includes(cell));
-        const sectionActive = !openingSelection
+        // The front tool shows only the picked opening in amber: a lit-up section looked picked while the buttons stayed hidden.
+        const sectionActive = !placingFronts && !openingSelection
           && selectedSection?.groupId === moduleState.groupId
           && selectedSection.sectionId === bottom.sectionId
           && (!selectedSection.tierId || selectedSection.tierId === bottom.tierId)
@@ -623,7 +626,7 @@ function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; p
         const color = inOpening || sectionActive ? '#f59e0b' : isHovered ? '#60a5fa' : '#94a3b8';
         // The front tool lights every opening up; drawer cells stay dim since no front goes there.
         const idleOpacity = placingFronts ? (hasDrawers ? 0.04 : 0.12) : 0.06;
-        const opacity = inOpening ? 0.28 : isHovered ? 0.18 : sectionActive ? 0.12 : idleOpacity;
+        const opacity = inOpening ? 0.38 : isHovered ? 0.2 : sectionActive ? 0.12 : pickedCells.length > 0 ? idleOpacity / 2 : idleOpacity;
         const width = Math.max(bottom.endX - bottom.startX, 8);
         const height = Math.max(top.endY - bottom.startY, 8);
         // One label per picked opening (on the overlay holding its top cell, with the whole size), or on the hovered one.
@@ -653,9 +656,9 @@ function CabinetOpeningsOverlay({ groupId, placingFronts }: { groupId: string; p
             >
               <planeGeometry args={[width, height]} />
               <meshBasicMaterial color={color} transparent opacity={opacity} side={THREE.DoubleSide} depthWrite={false} />
-              {placingFronts || inOpening ? <Edges color={color} /> : null}
+              {placingFronts || inOpening ? <Edges color={color} lineWidth={inOpening ? 3 : 1} /> : null}
             </mesh>
-            {(showRangeLabel || isHovered) ? <Html position={[0, height / 2 + 18, 0]} center><div style={{ fontSize: 12, color: '#111', background: 'rgba(255,255,255,0.96)', padding: '2px 6px', borderRadius: 6, border: `1px solid ${color}`, whiteSpace: 'nowrap' }}>{label}</div></Html> : null}
+            {(showRangeLabel || isHovered) ? <Html position={[0, height / 2 + 18, 0]} center><div style={{ fontSize: 12, color: '#111', background: 'rgba(255,255,255,0.96)', padding: '2px 6px', borderRadius: 6, border: `1px solid ${color}`, whiteSpace: 'nowrap', pointerEvents: 'none' }}>{label}</div></Html> : null}
           </group>
         );
       })}
@@ -960,6 +963,7 @@ export function SceneRoot() {
         <GrooveMarkers parts={visibleParts} />
         <SectionOverlay />
         <MeasurementOverlay />
+        <ShelfDragController />
         {sceneSnapCandidates.map((candidate) => <SnapPreview key={candidate.key} candidate={candidate} />)}
         {selected && sceneSnapCandidates.length > 0 ? (
           <Html position={[0, 260, 0]} center>

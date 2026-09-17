@@ -1,6 +1,6 @@
 // Шаг сборки: наполнение ярусов — перегородки, полки, блоки ящиков, делители.
 import { type Part, createPanelPart, roundDownToMillimeter } from '../part';
-import { NAME_SEP, DRAWER_BOX_BACK_OFFSET, HANDLED_FRONT_GAP, OVERLAY_FRONT_MIDDLE_GAP, DRAWER_BOTTOM_FACADE_MIN_CLEARANCE, DRAWER_BOX_LIFT_RELATIVE_TO_FACADE, DRAWER_BOX_HEIGHT_REDUCTION, DRAWER_FRONT_BACK_LOWER_BY, DRAWER_SIDE_BOTTOM_OVERHANG, DRAWER_BACK_LIFT, DRAWER_BOX_WALL_TOP_EXTENSION, DRAWER_FRONT_PANEL_MIN_FACADE_HEIGHT, DRAWER_BOTTOM_EXTRA_DEPTH } from './constants';
+import { NAME_SEP, DRAWER_BOX_BACK_OFFSET, HANDLED_FRONT_GAP, OVERLAY_FRONT_MIDDLE_GAP, DRAWER_BOTTOM_FACADE_MIN_CLEARANCE, DRAWER_BOX_LIFT_RELATIVE_TO_FACADE, DRAWER_BOX_HEIGHT_REDUCTION, DRAWER_FRONT_BACK_LOWER_BY, DRAWER_SIDE_BOTTOM_OVERHANG, DRAWER_BACK_LIFT, DRAWER_BOX_WALL_TOP_EXTENSION, DRAWER_FRONT_PANEL_MIN_FACADE_HEIGHT, DRAWER_BOTTOM_EXTRA_DEPTH, DRAWER_FACADE_SIDE_CLEARANCE } from './constants';
 import { roleLabel, getInsetAdjustedDepth, getInsetAdjustedCenterZ } from './common';
 import { getResolvedSectionDividers, getLocalSectionZones, getDrawerBlockZones, getSortedSectionTierDividers, getLocalSectionDividerCenters, getTierDividerDepth, getTierDividerCenterZ } from './frames';
 import { getSectionInnerSpan, MAX_DRAWER_BLOCK_COLUMNS, OPENING_EDGE_BOTTOM, OPENING_EDGE_TOP } from '../cabinet-layout';
@@ -96,7 +96,11 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
 
         if (!drawerStack) return;
         const columnCount = drawerStack.block ? Math.max(1, Math.min(MAX_DRAWER_BLOCK_COLUMNS, drawerStack.block.columns)) : 1;
-        const columnWidth = Math.max(20, (innerSpan.width - (columnCount - 1) * thickness) / columnCount);
+        // A false panel narrows the span the drawer boxes run in; their fronts still cover the whole section.
+        const falsePanel = drawerStack.block?.falsePanel;
+        const falsePanelSpan = falsePanel ? Math.min(Math.max(0, falsePanel.gap) + thickness, Math.max(0, innerSpan.width - 100)) : 0;
+        const boxSpanStartX = innerSpan.startX + (falsePanel?.side === 'left' ? falsePanelSpan : 0);
+        const columnWidth = Math.max(20, (innerSpan.width - falsePanelSpan - (columnCount - 1) * thickness) / columnCount);
         const zoneHasOwnBackPanel = !effectiveWithBackPanel && (
           Boolean(drawerStack.block?.withBackPanel)
           || options.backPanelSections.includes(makeSectionBackPanelKey(tierResolved.tierId, section.id))
@@ -111,12 +115,30 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
               // A back panel inside the section (the block's own, or a section/zone one) takes the rear strip.
               thickness: (usesSingleBackPanel ? innerDepth : (effectiveWithBackPanel ? depth : innerDepth)) - (zoneHasOwnBackPanel ? thickness : 0),
               position: {
-                x: position.x + innerSpan.startX + column * columnWidth + (column - 1) * thickness + thickness / 2,
+                x: position.x + boxSpanStartX + column * columnWidth + (column - 1) * thickness + thickness / 2,
                 y: zone.centerY,
                 z: (usesSingleBackPanel ? position.z + backInset / 2 : position.z) + (zoneHasOwnBackPanel ? thickness / 2 : 0),
               },
               // Default joinery for a new column; rebuilds keep whatever the user picks.
               meta: { groupId, role: 'drawer-column', sourceId: `${drawerStack.id}:column:${column}`, joinery: { ...createEmptySideJoinery(), top: 'confirmat', bottom: 'confirmat' } },
+            })
+          );
+        }
+        if (falsePanel && falsePanelSpan > 0) {
+          const panelDepth = (usesSingleBackPanel ? innerDepth : (effectiveWithBackPanel ? depth : innerDepth)) - (zoneHasOwnBackPanel ? thickness : 0);
+          parts.push(
+            createPanelPart({
+              name: `${name}${NAME_SEP}${roleLabel('drawer-false-panel')}`,
+              width: thickness,
+              height: zone.clearHeight,
+              thickness: getInsetAdjustedDepth(panelDepth, frontMode),
+              position: {
+                x: position.x + (falsePanel.side === 'left' ? innerSpan.startX + falsePanelSpan - thickness / 2 : innerSpan.endX - falsePanelSpan + thickness / 2),
+                y: zone.centerY,
+                z: getInsetAdjustedCenterZ((usesSingleBackPanel ? position.z + backInset / 2 : position.z) + (zoneHasOwnBackPanel ? thickness / 2 : 0), frontMode),
+              },
+              // Default fastening; the user may switch it to rafix, rebuilds keep that choice.
+              meta: { groupId, role: 'drawer-false-panel', sourceId: `${drawerStack.id}:false-panel`, joinery: { ...createEmptySideJoinery(), top: 'confirmat', bottom: 'confirmat' } },
             })
           );
         }
@@ -128,8 +150,11 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
         // Overlay drawer fronts: each column of the block's zone is an opening (same gap rules as doors), its drawers share its height.
         // Between drawer fronts the gap is the doors' middle gap (26163 pencil: 4 between drawer fronts, as between doors).
         const overlayFacadeGap = options.frontOpeningMode === 'handles' ? HANDLED_FRONT_GAP : OVERLAY_FRONT_MIDDLE_GAP;
+        // Front edges per column (cabinet-local X): the outer columns reach the section walls over a false panel.
+        const getFacadeStartX = (column: number) => column === 0 ? innerSpan.startX : boxSpanStartX + column * (columnWidth + thickness);
+        const getFacadeEndX = (column: number) => column === columnCount - 1 ? innerSpan.endX : boxSpanStartX + column * (columnWidth + thickness) + columnWidth;
         const getOverlayDrawerFacade = (column: number, stackIndexFromBottom: number) => {
-          const cellStartX = position.x + innerSpan.startX + column * (columnWidth + thickness);
+          const cellStartX = position.x + getFacadeStartX(column);
           const zoneCell: CabinetOpening = {
             tierId: tierResolved.tierId,
             sectionId: section.id,
@@ -137,7 +162,7 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
             bottomBoundaryId: Math.abs(zone.startY - frame.startY) < 0.5 ? OPENING_EDGE_BOTTOM : 'local-divider',
             topBoundaryId: Math.abs(zone.endY - frame.endY) < 0.5 ? OPENING_EDGE_TOP : 'local-divider',
             startX: cellStartX,
-            endX: cellStartX + columnWidth,
+            endX: position.x + getFacadeEndX(column),
             startY: zone.startY,
             endY: zone.endY,
             bottomHalf: thickness / 2,
@@ -162,7 +187,9 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
           (zone.clearHeight - totalFacadeHeight - bottomFacadeGap) / Math.max(1, drawerStack.drawerCount)
         );
         for (let column = 0; column < columnCount; column += 1) {
-        const columnCenterX = innerSpan.startX + column * (columnWidth + thickness) + columnWidth / 2;
+        const columnCenterX = boxSpanStartX + column * (columnWidth + thickness) + columnWidth / 2;
+        const insetFacadeWidth = Math.max(100, getFacadeEndX(column) - getFacadeStartX(column) - DRAWER_FACADE_SIDE_CLEARANCE);
+        const insetFacadeCenterX = position.x + (getFacadeStartX(column) + getFacadeEndX(column)) / 2;
         for (let idx = 0; idx < drawerStack.drawerCount; idx += 1) {
           drawerIndex += 1;
           const stackIndexFromBottom = drawerStack.drawerCount - 1 - idx;
@@ -190,10 +217,10 @@ export function buildInteriorParts(ctx: CabinetBuildContext & CabinetCarcass, pa
           const drawerBackCenterY = backWallCenterY + DRAWER_BOX_WALL_TOP_EXTENSION / 2;
           const facadePart = createPanelPart({
             name: `${name}${NAME_SEP}${roleLabel('drawer-front', drawerIndex)}`,
-            width: overlayFacade?.width ?? drawerGeometry.facadeWidth,
+            width: overlayFacade?.width ?? insetFacadeWidth,
             height: overlayFacade?.height ?? drawerGeometry.facadeHeight,
             thickness,
-            position: overlayFacade?.position ?? { x: boxCenterX, y: facadeCenterY, z: frontFaceZ },
+            position: overlayFacade?.position ?? { x: insetFacadeCenterX, y: facadeCenterY, z: frontFaceZ },
             meta: { groupId, role: 'drawer-front', sourceId: `${drawerSourceBase}:front` },
           });
           const leftSidePart = createPanelPart({

@@ -190,6 +190,40 @@ describe('drawer block', () => {
     expect(partsWithDrillConflicts(parts)).toEqual([]);
   });
 
+  it('a false panel stands the gap off the section wall, joined top and bottom; boxes run beside it, fronts still cover the section', () => {
+    for (const frontMode of ['overlay', 'inset'] as const) {
+      const plain = addBlock(createCabinet({ partitionCount: 1, frontMode }), 0, { drawerCount: 2, offset: 200 });
+      let parts = addBlock(createCabinet({ partitionCount: 1, frontMode }), 0, { drawerCount: 2, offset: 200, falsePanel: { side: 'left', gap: 50 } });
+      const [panel] = byRole(parts, 'drawer-false-panel');
+      expect(panel, frontMode).toBeDefined();
+      const leftSide = byRole(parts, 'left-side')[0]!;
+      const leftWallFace = leftSide.position.x + leftSide.width / 2;
+      expect(panel!.position.x - panel!.width / 2 - leftWallFace).toBeCloseTo(50, 3);
+      // Full height of the block: from the niche divider up to the block divider.
+      const dividers = localDividers(parts).sort((a, b) => a.position.y - b.position.y);
+      expect(panel!.position.y - panel!.height / 2).toBeCloseTo(dividers[0]!.position.y + dividers[0]!.height / 2, 3);
+      expect(panel!.position.y + panel!.height / 2).toBeCloseTo(dividers[1]!.position.y - dividers[1]!.height / 2, 3);
+      // Confirmats into both dividers by default, rafix on request.
+      expect(panel!.operations.length).toBeGreaterThan(0);
+      expect(dividers[0]!.operations.some((op) => op.source?.includes(panel!.id)), frontMode).toBe(true);
+      expect(dividers[1]!.operations.some((op) => op.source?.includes(panel!.id)), frontMode).toBe(true);
+      const boxSides = byRole(parts, 'drawer-side-left');
+      for (const side of boxSides) expect(side.position.x - side.width / 2).toBeGreaterThan(panel!.position.x + panel!.width / 2);
+      const plainFronts = byRole(plain, 'drawer-front').map((front) => [front.width, front.position.x]);
+      expect(byRole(parts, 'drawer-front').map((front) => [front.width, front.position.x])).toEqual(plainFronts);
+      const drawerParts = parts.filter((part) => part.meta?.role?.startsWith('drawer-side') || part.meta?.role === 'drawer-bottom');
+      expect(drawerParts.flatMap((box) => [panel!].filter((item) => boundsIntersect(getBounds([box]), getBounds([item]))).map(() => box.name))).toEqual([]);
+      const carcass = parts.filter((part) => CARCASS_ROLES.has(part.meta?.role));
+      expect(carcass.filter((item) => boundsIntersect(getBounds([panel!]), getBounds([item]))).map((item) => item.name)).toEqual([]);
+      expect(partsWithDrillConflicts(parts)).toEqual([]);
+
+      parts = applyGeneratedJoinery(parts.map((part) => part.id === panel!.id ? { ...part, meta: { ...part.meta, joinery: { ...createEmptySideJoinery(), top: 'rafix', bottom: 'rafix' } } } : part), rules);
+      const rafixPanel = parts.find((part) => part.id === panel!.id)!;
+      expect(rafixPanel.operations.length, frontMode).toBeGreaterThan(0);
+      expect(partsWithDrillConflicts(parts)).toEqual([]);
+    }
+  });
+
   it('inset drawer fronts stay inside the carcass', () => {
     const parts = addBlock(createCabinet({ partitionCount: 0, frontMode: 'inset' }), 0, { drawerCount: 2 });
     const module = moduleOf(parts);

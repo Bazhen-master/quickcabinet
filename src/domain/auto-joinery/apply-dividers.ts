@@ -104,10 +104,10 @@ export function applyDividerJoinery(ctx: GroupJoineryContext) {
       });
     });
 
-  // Drawer-block columns: joined to the horizontal panels they touch above and below.
+  // Drawer-block columns and false panels: joined to the horizontal panels they touch above and below.
   const columnHosts = groupParts.filter((part) => part.meta?.role === 'top' || part.meta?.role === 'bottom' || part.meta?.role === 'tier-divider');
   groupParts
-    .filter((part) => part.meta?.role === 'drawer-column')
+    .filter((part) => part.meta?.role === 'drawer-column' || part.meta?.role === 'drawer-false-panel')
     .forEach((columnPart) => {
       const joinery = columnPart.meta?.joinery ?? createEmptySideJoinery();
       const covers = (host: Part) => Math.abs(host.position.x - columnPart.position.x) < host.width / 2;

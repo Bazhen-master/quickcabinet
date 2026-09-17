@@ -175,6 +175,8 @@ export function Toolbar({
   const setSketchPanelOpen = useAppStore((s) => s.setSketchPanelOpen);
   const experimentalMoveMode = useAppStore((s) => s.experimentalMoveMode);
   const setExperimentalMoveMode = useAppStore((s) => s.setExperimentalMoveMode);
+  const kitchenMode = useAppStore((s) => s.kitchenMode);
+  const setKitchenMode = useAppStore((s) => s.setKitchenMode);
   const sketchCount = project.sketches?.length ?? 0;
   const isDarkBlue = themeMode === 'dark-blue';
   const holeInputStyle: React.CSSProperties = {
@@ -595,6 +597,7 @@ export function Toolbar({
             entries: [
               { combos: [[isRu ? 'ЛКМ' : 'LMB']], note: isRu ? 'тянуть' : 'drag', action: isRu ? 'Вращать камеру' : 'Orbit camera' },
               { combos: [[isRu ? 'ПКМ' : 'RMB'], ['Shift', isRu ? 'ЛКМ' : 'LMB']], note: isRu ? 'тянуть' : 'drag', action: isRu ? 'Сдвинуть камеру' : 'Pan camera' },
+              { combos: [['Shift', isRu ? 'ЛКМ' : 'LMB']], note: isRu ? 'тянуть полку' : 'drag a shelf', action: isRu ? 'Переставить полку (магнит к соседним)' : 'Move a shelf (snaps to neighbours)' },
               { combos: [[isRu ? 'Колесо' : 'Wheel']], action: isRu ? 'Приблизить / отдалить' : 'Zoom' },
             ],
           },
@@ -678,6 +681,10 @@ export function Toolbar({
                 <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer' }}>
                   <input type="checkbox" checked={experimentalMoveMode} onChange={(e) => setExperimentalMoveMode(e.target.checked)} />
                   {t(language, 'experimentalMoveMode')}
+                </label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, cursor: 'pointer', marginTop: 6 }}>
+                  <input type="checkbox" checked={kitchenMode} onChange={(e) => setKitchenMode(e.target.checked)} />
+                  {t(language, 'kitchenMode')}
                 </label>
               </div>
             </div>

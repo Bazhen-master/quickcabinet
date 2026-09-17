@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { addDrillToPart, addDrillsToPart, addPart, addParts, createProject, getDrillGroupToken, moveDrillGroup, movePartsWithDependentOperations, removeGroupWithDependentOperations, removePartWithDependentOperations, replaceParts, updatePart, type Project } from '../domain/project';
 import { isGenericSketchName, nextSketchName, type ProjectSketch } from '../domain/sketch';
 import { loadSavedProjectProgress, openProjectFromFile, saveProjectProgress, saveToSlot as saveSlotData, loadFromSlot as loadSlotData, deleteSaveSlot as deleteSlotData } from '../infra/save-load';
-import { addPartitionToLayoutSection, addShelfToLayoutSection, buildSimpleCabinet, getCabinetModuleState, getCabinetOpenings, getDefaultTierSection, getFrontSpecId, getDrawerStackForSection, getLeafSectionInnerSpan, getLeafSections, getLeafTierSections, getLocalZonesForSection, extendOpeningRef, rebuildCabinetGroup, removeCabinetElementFromLayout, replaceGroupParts, setFrontHingeInLayout, setFrontOnOpening, setFrontsOnAllOpenings as layoutWithFrontsOnAllOpenings, updateCabinetSectionWidths, updateCabinetTierHeight, updateLocalTierDividerLayout, updateTierDividerLayout, type CabinetBackPanelKind, type CabinetPlinthKind, type CabinetFrontMode, type CabinetFrontOpeningMode, type CabinetModuleState, type CabinetOpeningRef, type CabinetTopMode } from '../domain/cabinet-builder';
+import { addPartitionToLayoutSection, addShelfToLayoutSection, buildSimpleCabinet, getCabinetModuleState, getCabinetOpenings, getDefaultTierSection, getFrontSpecId, getDrawerStackForSection, getLeafSectionInnerSpan, getLeafSections, getLeafTierSections, getLocalZonesForSection, extendOpeningRef, getOpeningRange, rebuildCabinetGroup, removeCabinetElementFromLayout, replaceGroupParts, setFrontHingeInLayout, setFrontOnOpening, setFrontsOnAllOpenings as layoutWithFrontsOnAllOpenings, updateCabinetSectionWidths, updateCabinetTierHeight, updateLocalTierDividerLayout, updateTierDividerLayout, type CabinetBackPanelKind, type CabinetPlinthKind, type CabinetFrontMode, type CabinetFrontOpeningMode, type CabinetModuleState, type CabinetOpeningRef, type CabinetTopMode } from '../domain/cabinet-builder';
 import { createCabinetLayout, getCabinetTierSpecs, removeDrawerStack, setShelfElevations, setShelfApron as setShelfApronInLayout, updateAllFronts, upsertDrawerBlockInSection, type CabinetFrontHinge, type CabinetFrontKind, type CabinetLayout, type DrawerBlockAnchor, type DrawerBlockInput, type DrawerRunnerLength, type DrawerRunnerLengthMode, type DrawerRunnerType } from '../domain/cabinet-layout';
 import { clampPartSize, createPanelPart, roundDownToMillimeter, type Part, type PartFace } from '../domain/part';
 import { createDrillOperation, getFaceAxis, type DrillOperation } from '../domain/drill';
@@ -37,6 +37,7 @@ type CabinetDraft = { width: number; height: number; depth: number; thickness: n
 type OpeningSelection = (CabinetOpeningRef & { groupId: string }) | null;
 type MoveDraft = { axis: 'x' | 'y' | 'z'; distance: number; targetPartId: string; relativeRule: RelativePlacementRule; offset: number };
 type SectionSelection = { groupId: string; sectionId: string; tierId?: string; zoneId?: string } | null;
+export type ShelfDragState = { partId: string; startY: number; y: number; targetPartId: string | null } | null;
 
 type AppState = {
   history: HistoryState;
@@ -49,6 +50,8 @@ type AppState = {
   activeTool: ToolName;
   selectionMode: SelectionMode;
   experimentalMoveMode: boolean;
+  /** Kitchen features (plinth on legs, back rails) are shown only in this mode; a per-browser setting. */
+  kitchenMode: boolean;
   showDrilling: boolean;
   xrayMode: boolean;
   showAxisIndicator: boolean;
@@ -71,11 +74,17 @@ type AppState = {
   hoveredPartIds: string[];
   /** Where the hover comes from: the tree scrolls to a row only for hovers in the 3D view. */
   hoverSource: 'tree' | 'scene' | null;
+  /** Shelf dragged with Shift in 3D: its preview centre Y and the neighbour it lines up with. Transient, not part of history. */
+  shelfDrag: ShelfDragState;
 
   setActiveTool: (tool: ToolName) => void;
   setSelectionMode: (mode: SelectionMode) => void;
   setSelectedSection: (groupId: string | null, sectionId: string | null, tierId?: string | null, zoneId?: string | null) => void;
   setExperimentalMoveMode: (enabled: boolean) => void;
+  setKitchenMode: (enabled: boolean) => void;
+  setShelfDrag: (drag: ShelfDragState) => void;
+  /** Puts a cabinet shelf at a centre height (world mm) and rebuilds its cabinet. */
+  moveShelfToHeight: (partId: string, y: number) => void;
   setShowDrilling: (enabled: boolean) => void;
   setXrayMode: (enabled: boolean) => void;
   setShowAxisIndicator: (enabled: boolean) => void;
@@ -547,6 +556,12 @@ function commitSnapCandidate(state: AppState, targetPartId: string, candidateId:
 // The autosaved project is restored asynchronously before the first render (main.tsx → hydrateSavedProject).
 const initialProject = createProject('Furniture MVP');
 
+const KITCHEN_MODE_STORAGE_KEY = 'furniture_v9:kitchen-mode';
+
+function readKitchenMode() {
+  try { return localStorage.getItem(KITCHEN_MODE_STORAGE_KEY) === '1'; } catch { return false; }
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   history: createHistory(initialProject),
   selected: null,
@@ -558,6 +573,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeTool: 'select',
   selectionMode: 'part',
   experimentalMoveMode: false,
+  kitchenMode: readKitchenMode(),
   showDrilling: true,
   xrayMode: true,
   showAxisIndicator: false,
@@ -578,11 +594,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   activeSketchId: null,
   hoveredPartIds: [],
   hoverSource: null,
+  shelfDrag: null,
 
   setActiveTool: (tool) => set((state) => ({ activeTool: tool, measuredFaces: tool === 'measure' ? state.measuredFaces : [null, null] })),
   setSelectionMode: (mode) => set({ selectionMode: mode }),
   setSelectedSection: (groupId, sectionId, tierId, zoneId) => set({ selectedOpening: null, selectedSection: groupId && sectionId ? { groupId, sectionId, tierId: tierId ?? undefined, zoneId: zoneId ?? undefined } : null }),
   setExperimentalMoveMode: (enabled) => set({ experimentalMoveMode: enabled }),
+  setShelfDrag: (drag) => set({ shelfDrag: drag }),
+  moveShelfToHeight: (partId, y) => {
+    const state = get();
+    const shelf = findPart(state.history.present, partId);
+    const groupId = shelf?.meta?.groupId;
+    const module = groupId ? getCabinetModuleState(state.history.present.parts, groupId) : null;
+    if (!shelf || shelf.meta?.role !== 'shelf' || !shelf.meta.sourceId || !groupId || !module) return;
+    const next = rebuildGroupWithLayout(state, groupId, setShelfElevations(module.layout, new Map([[shelf.meta.sourceId, y - module.position.y]])));
+    if (next) set({ history: applyProject(state.history, next), lastValidationErrors: [] });
+  },
+  setKitchenMode: (enabled) => {
+    try { localStorage.setItem(KITCHEN_MODE_STORAGE_KEY, enabled ? '1' : '0'); } catch { /* storage unavailable: keep in memory only */ }
+    set({ kitchenMode: enabled });
+  },
   setShowDrilling: (enabled) => set({ showDrilling: enabled }),
   setXrayMode: (enabled) => set({ xrayMode: enabled }),
   setShowAxisIndicator: (enabled) => set({ showAxisIndicator: enabled }),
@@ -1383,7 +1414,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedDrill: null,
       selectedSection: { groupId, sectionId: section.sectionId, tierId: section.tierId, zoneId: section.zoneId ?? undefined },
     };
-    if (!opening) return { ...sectionSelection, selectedOpening: null };
+    // Shift+click on a drawer cell keeps the picked opening: no front goes over drawers.
+    if (!opening) return extend && state.selectedOpening?.groupId === groupId ? {} : { ...sectionSelection, selectedOpening: null };
     const ref: CabinetOpeningRef = {
       tierId: opening.tierId,
       sectionId: opening.sectionId,
@@ -1395,7 +1427,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!extend || current?.groupId !== groupId) return { ...sectionSelection, selectedOpening: { groupId, ...ref } };
     // Shift+click grows the picked opening to the clicked cell along its column, up or down, across tiers too;
     // a cell outside the column starts a new pick.
-    const extended = extendOpeningRef(getCabinetOpenings(state.history.present.parts, groupId), current, ref);
+    const openings = getCabinetOpenings(state.history.present.parts, groupId);
+    const extended = extendOpeningRef(openings, current, ref);
+    // Growing over drawers would give an opening no front can take (the front buttons would do nothing): keep the pick.
+    const extendedRange = extended ? getOpeningRange(openings, extended) : null;
+    if (extendedRange?.cells.slice(extendedRange.from, extendedRange.to + 1).some((cell) => cell.hasDrawers)) return {};
     return { ...sectionSelection, selectedOpening: { groupId, ...(extended ?? ref) } };
   }),
   setFrontOnSelectedOpening: (front) => {

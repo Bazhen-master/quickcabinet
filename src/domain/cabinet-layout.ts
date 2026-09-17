@@ -95,7 +95,17 @@ export type CabinetDrawerBlockSpec = {
   withBackPanel: boolean;
   /** Drawers take the whole section beyond the niche: no inner divider is built and slotHeight is not used. */
   fill?: boolean;
+  /** Full-height panel inside the block, `gap` mm off one section wall: the drawers run on it past hinges, a wall or a door casing. */
+  falsePanel?: DrawerFalsePanelSpec;
 };
+
+export type DrawerFalsePanelSpec = {
+  side: 'left' | 'right';
+  /** Clear gap between the section wall and the false panel, mm. */
+  gap: number;
+};
+
+export const DEFAULT_DRAWER_FALSE_PANEL_GAP = 20;
 
 export type DrawerBlockInput = {
   anchor: DrawerBlockAnchor;
@@ -108,6 +118,7 @@ export type DrawerBlockInput = {
   runnerLength: DrawerRunnerLength;
   runnerLengthMode: DrawerRunnerLengthMode;
   fill?: boolean;
+  falsePanel?: DrawerFalsePanelSpec;
 };
 
 export const DEFAULT_DRAWER_SLOT_HEIGHT = 200;
@@ -933,6 +944,7 @@ export function upsertDrawerBlockInSection(
       columns: Math.max(1, Math.min(MAX_DRAWER_BLOCK_COLUMNS, Math.round(input.columns))),
       withBackPanel: input.withBackPanel,
       fill: Boolean(input.fill),
+      ...(input.falsePanel ? { falsePanel: { side: input.falsePanel.side, gap: Math.max(0, Math.round(input.falsePanel.gap)) } } : {}),
     },
   };
   const nextTierLayout: HorizontalCabinetLayout = {
@@ -946,7 +958,7 @@ export function upsertDrawerBlockInSection(
   return { layout: withTierSpecs(tiers.map((tier, index) => index === tierIndex ? { ...tier, layout: nextTierLayout } : tier)), drawerStack };
 }
 
-export function updateDrawerBlock(layout: CabinetLayout, drawerId: string, patch: Partial<Pick<CabinetDrawerBlockSpec, 'columns' | 'slotHeight' | 'withBackPanel' | 'offset' | 'fill'>>): CabinetLayout {
+export function updateDrawerBlock(layout: CabinetLayout, drawerId: string, patch: Partial<Pick<CabinetDrawerBlockSpec, 'columns' | 'slotHeight' | 'withBackPanel' | 'offset' | 'fill' | 'falsePanel'>>): CabinetLayout {
   const tierIndex = findTierIndexByDrawerId(layout, drawerId);
   if (tierIndex < 0) return layout;
   const tiers = getTierSpecs(layout);

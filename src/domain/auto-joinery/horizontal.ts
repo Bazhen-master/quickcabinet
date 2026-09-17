@@ -398,7 +398,7 @@ export function createTopJoineryOps(horizontalPart: Part, support: SectionSuppor
   if (joinery === 'none') return { horizontalOps: [] as DrillOperation[], supportOps: [] as DrillOperation[] };
   if (joinery === 'confirmat') return createTopConfirmatOps(horizontalPart, support, sideKey, rules);
   if (joinery === 'confirmat-dowel') return createHorizontalConfirmatDowelOps(horizontalPart, support.supportPart, sideKey, rules);
-  const supportIsVerticalDivider = support.supportPart.meta?.role === 'partition' || support.supportPart.meta?.role === 'drawer-column';
+  const supportIsVerticalDivider = support.supportPart.meta?.role === 'partition' || support.supportPart.meta?.role === 'drawer-column' || support.supportPart.meta?.role === 'drawer-false-panel';
   if (joinery === 'minifix-dowel' && supportIsVerticalDivider && support.supportFace === 'top') {
     return createPartitionTopMinifixDowelOps(horizontalPart, support, sideKey, rules);
   }

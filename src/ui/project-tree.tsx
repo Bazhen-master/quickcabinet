@@ -56,6 +56,7 @@ function getPartCategory(role?: PartRole): PartCategoryId {
     case 'drawer-inner-front':
     case 'drawer-bottom':
     case 'drawer-column':
+    case 'drawer-false-panel':
       return 'drawers';
     case 'back-panel':
       return 'back';
